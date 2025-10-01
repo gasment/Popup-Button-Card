@@ -1087,8 +1087,9 @@ window.customCards = window.customCards || [];
 if (!window.customCards.some((c) => c.type === 'popup-button-card')) {
   window.customCards.push({ 
     type: 'popup-button-card', 
-    name: 'Popup Button Card v2', 
+    name: 'Popup Button Card v2.1.1', 
     description: '一个带弹窗的按钮卡片' 
   });
 }
+
 
