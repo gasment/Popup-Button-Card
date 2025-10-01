@@ -1,4 +1,4 @@
-//v2.1
+//v2.1.1
 class PopupButtonCard extends HTMLElement {
   constructor() {
     super();
@@ -641,7 +641,7 @@ class PopupButtonCard extends HTMLElement {
       // 先发送关闭信号，让其他弹窗有机会先关闭
       window.dispatchEvent(new CustomEvent('expandable-close-all', { detail: this }));
       // 给其他弹窗一点关闭的时间，避免遮罩闪烁
-      setTimeout(() => this._actualToggle(), 150);
+      setTimeout(() => this._actualToggle(), 120);
       return;
     }
     
@@ -1091,3 +1091,4 @@ if (!window.customCards.some((c) => c.type === 'popup-button-card')) {
     description: '一个带弹窗的按钮卡片' 
   });
 }
+
