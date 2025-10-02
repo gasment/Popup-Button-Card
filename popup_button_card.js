@@ -1,4 +1,4 @@
-//v2.1.3
+//v2.1.4
 class PopupButtonCard extends HTMLElement {
   constructor() {
     super();
@@ -203,6 +203,11 @@ class PopupButtonCard extends HTMLElement {
    // 已开 或 正在关闭 都需要让位；与是否启用 outside_blur 无关（新遮罩来自“新实例”）
     if ((this._open || this.hasAttribute('data-closing')) && this._side !== 'full_screen') {
       this.setAttribute('data-yield', '');
+      // 立即撤销置顶与按钮状态，避免快切换残留
+      this.removeAttribute('data-opening');
+      this.removeAttribute('data-active');
+      this._pressable?.classList.remove('pressed','effect');
+      this._pressable?.style?.removeProperty('--effect-color');
     }
   }
 
@@ -485,7 +490,7 @@ class PopupButtonCard extends HTMLElement {
         .inner-grid { display:contents; }
 
         /* 非全屏弹窗 */
-        .popup { position:fixed; z-index: 1001; pointer-events:auto; background:var(--card-background-color,#fff); border-radius:8px; padding:10px; box-shadow:0 4px 20px rgba(0,0,0,0.3); display:none; opacity:0; transform:scale(0.95); }
+        .popup { position:fixed; z-index: 1001; pointer-events:auto; background:var(--card-background-color,#fff); border-radius:8px; padding:10px; box-shadow:0 4px 20px rgba(0,0,0,0.3); display:none; opacity:0; transform:scale(0.95); overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
         :host(:not([data-fullscreen])) .toggle { position: relative; } /* 允许 z-index 生效 */
         
         :host([data-active]:not([data-fullscreen])) .toggle,
@@ -555,6 +560,7 @@ class PopupButtonCard extends HTMLElement {
           opacity: 0;
           display: none;
           pointer-events: none; /* 打开时才启用以拦截点击 */
+          touch-action: none; /* 禁止在遮罩上滚动/手势 */
         }
         @keyframes overlayIn { from {opacity:0} to {opacity:1} }
         @keyframes overlayOut { from {opacity:1} to {opacity:0} }
@@ -591,6 +597,8 @@ class PopupButtonCard extends HTMLElement {
       this._overlayEl = document.createElement('div');
       this._overlayEl.className = 'popup-overlay';
       this._overlayEl.addEventListener('animationend', this._onAnimationEnd);
+      this._overlayEl.addEventListener('wheel', this._onOverlayWheelOrTouchMove, { passive:false });
+      this._overlayEl.addEventListener('touchmove', this._onOverlayWheelOrTouchMove, { passive:false });
       // 点击遮罩：统一关闭 & 阻止穿透
       this._overlayEl.addEventListener('pointerdown', (e)=>{ e.stopPropagation(); e.preventDefault(); }, { capture:true });
       this._overlayEl.addEventListener('click', (e)=>{ 
@@ -718,6 +726,25 @@ class PopupButtonCard extends HTMLElement {
     const restartAnim = (type) => { this._popupEl.removeAttribute('data-anim'); void this._popupEl.offsetWidth; this._popupEl.setAttribute('data-anim', type); };
     
     if (this._open) {
+      // === 空内容兜底：非全屏若无内容则撤销打开，避免小白块 ===
+      if (this._side !== 'full_screen') {
+        const noCfgContent = !this._config?.content;
+        const noDomContent = !this._popupEl?.childElementCount;
+        if (noCfgContent || noDomContent) {
+          this._open = false;
+          this._pressable?.classList.remove('pressed','effect');
+          this._pressable?.style?.removeProperty('--effect-color');
+          this.removeAttribute('data-opening');
+          this.removeAttribute('data-active');
+          if (this._overlayEl) {
+            this._overlayEl.style.pointerEvents = 'none';
+            this._overlayEl.style.display = 'none';
+            this._overlayEl.removeAttribute('data-anim');
+          }
+          return;
+        }
+      }
+
       this._openGuardUntil = performance.now() + 400;
       
       if ((this._config.popup_outside_blur || !this._config.multi_expand) && this._side !== 'full_screen') {
@@ -733,6 +760,7 @@ class PopupButtonCard extends HTMLElement {
 
       this.setAttribute('data-opening', '');
       this.setAttribute('data-active', '');
+      if (this._side !== 'full_screen' && this._config?.popup_outside_blur) this._lockBodyScroll();
       if (this._side === 'full_screen') {
         this.setAttribute('data-fullscreen', '');
       }
@@ -927,12 +955,23 @@ class PopupButtonCard extends HTMLElement {
     this._destroyFullscreenWrap();
   }
   
-  _onOverlayWheelOrTouchMove(e) { 
-    const wrap = this._contentWrap; 
-    if (!wrap || !wrap.contains(e.target)) { 
-      e.preventDefault(); 
-      e.stopPropagation(); 
-    } 
+  _onOverlayWheelOrTouchMove(e) {
+    // 全屏：只允许 content-wrap 内滚动；否则若启用 outside blur，只允许 .popup 内滚动
+    if (this._side === 'full_screen') {
+      const wrap = this._contentWrap; 
+      if (!wrap || !wrap.contains(e.target)) { 
+        e.preventDefault(); 
+        e.stopPropagation(); 
+      } 
+      return;
+    }
+    if (this._config?.popup_outside_blur) {
+      const inPopup = this._popupEl && (this._popupEl === e.target || this._popupEl.contains(e.target));
+      if (!inPopup) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    }
   }
   
   _onOverlayClickToClose(e) { 
@@ -1039,6 +1078,8 @@ class PopupButtonCard extends HTMLElement {
       // 兜底：若还残留 data-opening（极端竞态），此处一并移除
       //this.removeAttribute('data-opening');
       this.removeAttribute('data-yield');
+    
+      if (this._config?.popup_outside_blur) this._unlockBodyScroll();
     }
   }
 
@@ -1178,7 +1219,7 @@ window.customCards = window.customCards || [];
 if (!window.customCards.some((c) => c.type === 'popup-button-card')) {
   window.customCards.push({ 
     type: 'popup-button-card', 
-    name: 'Popup Button Card v2.1.3', 
+    name: 'Popup Button Card v2.1.4', 
     description: '一个带弹窗的按钮卡片' 
   });
 }
