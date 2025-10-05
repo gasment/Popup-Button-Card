@@ -715,15 +715,30 @@ class PopupButtonCard extends HTMLElement {
 
   /* ================= 开合与定位 ================= */
   toggle() {
-    // 仅在非全屏模式 + 启用背景模糊时，先关闭其他弹窗
-  if (!this._open && this._config.popup_outside_blur && this._side !== 'full_screen') {
-    window.dispatchEvent(new CustomEvent('expandable-yield-others', { detail: this }));
-    window.dispatchEvent(new CustomEvent('expandable-close-all', { detail: this }));
-    setTimeout(() => this._actualToggle(), 10);
-    return;
-  }
-    
-    // 直接执行原来的逻辑
+    // 决策逻辑只在“即将打开”时执行
+    if (!this._open) {
+      // 判断是否需要关闭其他已打开的弹窗
+      // 满足以下任一条件即可：
+      const shouldCloseOthers =
+        // 1. 即将打开的是一个全屏弹窗 (最高优先级，无视 multi_expand)
+        this._side === 'full_screen' ||
+        // 2. 或者，它不是全屏弹窗，但 multi_expand 设置为 false
+        (!this._config.multi_expand && this._side !== 'full_screen');
+
+      if (shouldCloseOthers) {
+        // 先发出“让位”信号，让其他弹窗立即降低 z-index，避免视觉冲突
+        window.dispatchEvent(new CustomEvent('expandable-yield-others', { detail: this }));
+        // 再发出“关闭”信号
+        window.dispatchEvent(new CustomEvent('expandable-close-all', { detail: this }));
+        
+        // 给予一个非常短暂的延迟（50毫秒）
+        // 目的是让其他弹窗有足够的时间开始它们的关闭动画，从而实现平滑的过渡效果
+        setTimeout(() => this._actualToggle(), 50);
+        return; // 阻止后续代码立即执行
+      }
+    }
+
+    // 如果是关闭操作，或者是不需要关闭其他弹窗的打开操作，则直接执行
     this._actualToggle();
   }
 
