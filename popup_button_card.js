@@ -733,7 +733,7 @@ class PopupButtonCard extends HTMLElement {
         
         // 给予一个非常短暂的延迟（50毫秒）
         // 目的是让其他弹窗有足够的时间开始它们的关闭动画，从而实现平滑的过渡效果
-        setTimeout(() => this._actualToggle(), 50);
+        setTimeout(() => this._actualToggle(), 10);
         return; // 阻止后续代码立即执行
       }
     }
@@ -1245,3 +1245,4 @@ if (!window.customCards.some((c) => c.type === 'popup-button-card')) {
     description: '一个带弹窗的按钮卡片' 
   });
 }
+
