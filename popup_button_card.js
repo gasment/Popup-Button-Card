@@ -1,4 +1,4 @@
-//v2.1.4
+//v2.1.5
 class PopupButtonCard extends HTMLElement {
   constructor() {
     super();
@@ -155,6 +155,10 @@ class PopupButtonCard extends HTMLElement {
     window.addEventListener('expandable-close-all', this._onExpandableCloseAll);
     window.addEventListener('expandable-close-others', this._onExpandableCloseOthers);
     window.addEventListener('expandable-yield-others', this._onExpandableYieldOthers);
+    this.style.transform = 'translateZ(0)';
+    setTimeout(() => {
+      this.style.transform = '';
+    }, 0);
   }
 
   disconnectedCallback() {
@@ -489,6 +493,9 @@ class PopupButtonCard extends HTMLElement {
 
         .inner-grid { display:contents; }
 
+        .name, .state, .label {
+          line-height: 1.1; /* 重置行高 */
+        }
         /* 非全屏弹窗 */
         .popup { position:fixed; z-index: 1001; pointer-events:auto; background:var(--card-background-color,#fff); border-radius:8px; padding:10px; box-shadow:0 4px 20px rgba(0,0,0,0.3); display:none; opacity:0; transform:scale(0.95); overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
         :host(:not([data-fullscreen])) .toggle { position: relative; } /* 允许 z-index 生效 */
@@ -694,11 +701,11 @@ class PopupButtonCard extends HTMLElement {
     } else if (iconEl) { iconEl.remove(); }
 
     const ensureSpan = (cls, area) => { let el = grid.querySelector('.' + cls); if (!el) { el = document.createElement('span'); el.className = cls; el.style.gridArea = area; grid.appendChild(el); } return el; };
-    if (nameVal) { const nameEl = ensureSpan('name','n'); nameEl.textContent = nameVal; this.applyStyleList(nameEl, styles.name || []); } else { grid.querySelector('.name')?.remove(); }
+    if (nameVal) { const nameEl = ensureSpan('name','n'); nameEl.innerHTML  = nameVal; this.applyStyleList(nameEl, styles.name || []); } else { grid.querySelector('.name')?.remove(); }
     const showState = (styles.state && Array.isArray(styles.state)) || stateVal !== '';
-    if (showState) { const stateEl = ensureSpan('state','s'); stateEl.textContent = stateVal; this.applyStyleList(stateEl, styles.state || []); } else { grid.querySelector('.state')?.remove(); }
+    if (showState) { const stateEl = ensureSpan('state','s'); stateEl.innerHTML  = stateVal; this.applyStyleList(stateEl, styles.state || []); } else { grid.querySelector('.state')?.remove(); }
     const showLabel = (styles.label && Array.isArray(styles.label)) || labelVal !== '';
-    if (showLabel) { const labelEl = ensureSpan('label','l'); labelEl.textContent = labelVal; this.applyStyleList(labelEl, styles.label || []); } else { grid.querySelector('.label')?.remove(); }
+    if (showLabel) { const labelEl = ensureSpan('label','l'); labelEl.innerHTML  = labelVal; this.applyStyleList(labelEl, styles.label || []); } else { grid.querySelector('.label')?.remove(); }
 
     // 统一应用 styles.button
     if (styles.button) this._applyButtonStylesUnified(styles.button);
@@ -1219,7 +1226,7 @@ window.customCards = window.customCards || [];
 if (!window.customCards.some((c) => c.type === 'popup-button-card')) {
   window.customCards.push({ 
     type: 'popup-button-card', 
-    name: 'Popup Button Card v2.1.4', 
+    name: 'Popup Button Card v2.1.5', 
     description: '一个带弹窗的按钮卡片' 
   });
 }
