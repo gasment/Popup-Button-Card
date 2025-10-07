@@ -200,7 +200,7 @@ styles目前支持的字段：content/button/name/label/state/icon/grid/overlay/
     styles:
         button:
             - height: 60px #按钮高度
-            - width: auto  #按钮宽度
+            - width: 100%  #按钮宽度,height/width不配置时，按钮宽高由其内元素确定，可配置具体值，或使用100%以使其自动拉伸填充到外部容器尺寸
             - background: |    #按钮背景色，可使用js模板动态设置
                 [[[
                 if (states[`switch.entity`].state === "on"){
