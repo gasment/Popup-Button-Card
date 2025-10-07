@@ -193,7 +193,7 @@ styles目前支持的字段：content/button/name/label/state/icon/grid/overlay/
                 - background: lightgray
                 - height: calc(90vh - 130px)
                 - width: 85%
-                - margin-top: 15px
+                - margin-bottom: 100px  #底部边距
         ```
 - 11、2 styles->button，设置按钮的样式
     ```
