@@ -1,4 +1,4 @@
-//v2.1.6
+//v2.1.8
 class PopupButtonCard extends HTMLElement {
   constructor() {
     super();
@@ -224,18 +224,34 @@ class PopupButtonCard extends HTMLElement {
     if (this._open && this._side !== 'full_screen') this.close();
   };
 
-  /* ================= Home Assistant ================= */
+   /* ================= Home Assistant ================= */
   set hass(hass) { this._hass = hass; if (this._contentCard) this._contentCard.hass = hass; this.updateDynamicContent(); }
+  
   setConfig(config) {
     this._rawConfig = config || {};
     const { finalCfg, finalVars } = this._resolveTemplatesAndVariables(this._rawConfig);
-    this._variables = finalVars || {}; this._config = finalCfg || {};
+    this._variables = finalVars || {};
+    // 1. 将原始的、未解析的最终配置存储在一个私有属性中。
+    this._finalConfig = finalCfg || {};
+
+    // 2. 创建一个 Proxy 作为 this._config 供整个组件使用。
+    //    任何对 this._config.someProperty 的访问都会触发 get() 处理器。
+    this._config = new Proxy(this._finalConfig, {
+      get: (target, prop) => {
+        // 当代码尝试获取配置属性时，这个函数会自动运行。
+        const rawValue = target[prop];
+        
+        //直接调用现有的 evaluateTemplate 方法。
+        return this.evaluateTemplate(rawValue);
+      }
+    });
     this._side = this._config.expand_side || 'bottom';
     this._computeFsOverlayClickFlag();
     this._tapAction  = this._config.tap_action;
     this._holdAction = this._config.hold_action;
     if (!this.shadowRoot) this._render(); else { this.updateDynamicContent(); this.loadContent(); if (this._open) this.positionPopup(); }
   }
+
 
   /* ================= 模板 / 样式工具 ================= */
   evaluateTemplate(value) {
@@ -668,13 +684,12 @@ class PopupButtonCard extends HTMLElement {
     if (!grid) { grid = document.createElement('div'); grid.className = 'inner-grid'; this._pressable.appendChild(grid); }
     if (styles.grid) this.applyStyleList(this._pressable, styles.grid);
 
-    const nameVal  = this.evaluateTemplate(this._config.name || '');
-    const labelVal = this.evaluateTemplate(this._config.label || '');
-    const iconRaw  = this._config.button_icon ?? '';
-    const iconVal  = this.evaluateTemplate(iconRaw);
+    const nameVal  = this._config.name || '';
+    const labelVal = this._config.label || '';
+    const iconVal  = this._config.button_icon ?? '';
 
-    const rawStateFromConfig = this._config.state ?? '';
-    const stateFromConfig = this.evaluateTemplate(rawStateFromConfig);
+    const stateFromConfig = this._config.state ?? '';
+
     const stateFromEntity = this._config.entity ? (this._hass?.states?.[this._config.entity]?.state ?? '') : '';
     const stateVal = (stateFromEntity !== '' && stateFromEntity != null) ? String(stateFromEntity) : String(stateFromConfig);
 
@@ -799,7 +814,7 @@ class PopupButtonCard extends HTMLElement {
 
       this._pressable.classList.add('pressed');
       if (this._config.button_effect) {
-        const color = this.evaluateTemplate(this._config.button_effect_color || '#ffa500');
+        const color = this._config.button_effect_color || '#ffa500';
         this._pressable.style.setProperty('--effect-color', color);
         this._pressable.classList.add('effect');
       }
@@ -1233,8 +1248,7 @@ window.customCards = window.customCards || [];
 if (!window.customCards.some((c) => c.type === 'popup-button-card')) {
   window.customCards.push({ 
     type: 'popup-button-card', 
-    name: 'Popup Button Card v2.1.6', 
+    name: 'Popup Button Card v2.1.8', 
     description: '一个带弹窗的按钮卡片' 
   });
 }
-
