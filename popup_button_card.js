@@ -1,4 +1,4 @@
-//v2.1.5
+//v2.1.6
 class PopupButtonCard extends HTMLElement {
   constructor() {
     super();
@@ -452,25 +452,26 @@ class PopupButtonCard extends HTMLElement {
       this.attachShadow({ mode: 'open' });
       const styleEl = document.createElement('style');
       styleEl.textContent = `
-        :host { display:inline-block; position:relative; -webkit-tap-highlight-color:transparent; user-select:none; pointer-events:none; }
-
-        /* 外层容器：只负责布局与命中区域，不做视觉（无 padding/阴影/背景/transform）*/
-        .toggle {
-          all:unset; cursor:pointer; display:inline-block;
-          margin: 0;
-          border: 0;
-          line-height: 0;
-          pointer-events:auto; touch-action:manipulation; outline:none; -webkit-tap-highlight-color:transparent;
-          position: relative;
-          /* ⚠️ 去掉全局 z-index，避免所有实例都压过遮罩 */
+        /* 1. 组件宿主：作为布局容器，决定组件在页面流中的位置和尺寸 */
+        :host {
+          display: inline-flex;
+          outline: none;
+          -webkit-tap-highlight-color: transparent;
         }
-         /* ========= 用宿主 :host 管全局层级（跨实例有效） ========= */
-        :host([data-opening]:not([data-fullscreen])) { z-index: 1003; position: relative; }
-        :host([data-active]:not([data-fullscreen])),
-        :host([data-closing]:not([data-fullscreen])) { z-index: 1002; position: relative; }
-        :host([data-yield]:not([data-fullscreen])) { z-index: 999; position: relative; }
-        
-        /* 内层可视包裹：所有视觉样式在这里 */
+
+        /* 2. 外层容器/命中区域：填满宿主，并居中 .pressable */
+        .toggle {
+          all:unset; cursor:pointer;
+          display: flex; 
+          justify-content: center;
+          align-items: center;
+          width: 100%;
+          height: 100%;
+          position: relative; /* 为 z-index 和绝对定位的子元素提供定位上下文 */
+          pointer-events:auto; touch-action:manipulation;
+        }
+
+        /* 3. 内层可视包裹：所有视觉样式和内部布局都在这里 */
         .pressable {
           display:inline-grid; justify-items:center; align-items:center; gap:4px;
           padding:8px 12px;
@@ -480,6 +481,29 @@ class PopupButtonCard extends HTMLElement {
           transform-origin:center center;
           transition: transform 220ms ease-out, box-shadow 200ms ease, background 200ms ease, border-radius 200ms ease;
         }
+
+        /* ========= 层级管理：核心逻辑 ========= */
+        /* 用宿主 :host 管全局层级（确保当前卡片在其他卡片之上） */
+        :host([data-opening]:not([data-fullscreen])) { z-index: 1003; position: relative; }
+        :host([data-active]:not([data-fullscreen])),
+        :host([data-closing]:not([data-fullscreen])) { z-index: 1002; position: relative; }
+        :host([data-yield]:not([data-fullscreen])) { z-index: 999; position: relative; }
+        
+        /* 【关键恢复】在组件内部，根据状态提升 .toggle 和 .popup 的层级 */
+        /* 确保它们都显示在 .popup-overlay (z-index: 1000) 之上 */
+        :host([data-active]:not([data-fullscreen])) .toggle,
+        :host([data-closing]:not([data-fullscreen])) .toggle,
+        :host([data-active]:not([data-fullscreen])) .popup,
+        :host([data-closing]:not([data-fullscreen])) .popup { 
+          z-index: 1002; 
+        }
+        :host([data-opening]:not([data-fullscreen])) .toggle,
+        :host([data-opening]:not([data-fullscreen])) .popup { 
+          z-index: 1003; 
+        }
+        /* (yield 状态的 z-index 由 :host 控制即可，内部元素无需额外设置) */
+        
+        /* ========= 其他样式（保持不变） ========= */
 
         .pressable.pressed { /* reserved */ }
         :host([data-opening]:not([data-fullscreen])) .pressable.effect,
@@ -494,21 +518,12 @@ class PopupButtonCard extends HTMLElement {
         .inner-grid { display:contents; }
 
         .name, .state, .label {
-          line-height: 1.1; /* 重置行高 */
+          line-height: 1.1;
+          white-space: pre-wrap;
         }
-        /* 非全屏弹窗 */
-        .popup { position:fixed; z-index: 1001; pointer-events:auto; background:var(--card-background-color,#fff); border-radius:8px; padding:10px; box-shadow:0 4px 20px rgba(0,0,0,0.3); display:none; opacity:0; transform:scale(0.95); overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
-        :host(:not([data-fullscreen])) .toggle { position: relative; } /* 允许 z-index 生效 */
         
-        :host([data-active]:not([data-fullscreen])) .toggle,
-        :host([data-closing]:not([data-fullscreen])) .toggle { z-index: 1002; }
-         /* 非全屏弹窗：关闭期间同样保持与 active 一样的层级，避免掉到模糊层下方 */
-        :host([data-active]:not([data-fullscreen])) .popup,
-        :host([data-closing]:not([data-fullscreen])) .popup { z-index: 1002; }
-        :host([data-opening]:not([data-fullscreen])) .toggle,
-        :host([data-opening]:not([data-fullscreen])) .popup { z-index: 1003; }
-        :host([data-yield]:not([data-fullscreen])) .toggle,
-        :host([data-yield]:not([data-fullscreen])) .popup { z-index: 999; }
+        .popup { position:fixed; z-index: 1001; pointer-events:auto; background:var(--card-background-color,#fff); border-radius:8px; padding:10px; box-shadow:0 4px 20px rgba(0,0,0,0.3); display:none; opacity:0; transform:scale(0.95); overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+        
         @keyframes popupIn { from {opacity:0; transform:scale(0.95)} to {opacity:1; transform:scale(1)} }
         @keyframes popupOut{ from {opacity:1; transform:scale(1)} to {opacity:0; transform:scale(0.95)} }
         .popup[data-anim="open"]  { display:block; animation: popupIn 220ms ease forwards; }
@@ -516,12 +531,11 @@ class PopupButtonCard extends HTMLElement {
 
         :host([data-closing]) .toggle { pointer-events: none; }
 
-        /* 全屏遮罩 */
         .popup.fullscreen {
            position:fixed; inset:0; width:100vw; height:100vh; padding:0; border-radius:0;
            background:rgba(0,0,0,0.40); backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px);
-           display:none; opacity:0; transform:none; overscroll-behavior:none;
            display:flex; align-items:center; justify-content:center;
+           opacity:0; transform:none; overscroll-behavior:none;
         }
         .popup.fullscreen[data-anim] { display:flex; }
         .popup.fullscreen .content-wrap {
@@ -536,18 +550,18 @@ class PopupButtonCard extends HTMLElement {
         }
         .popup.fullscreen .close-fab { position:absolute; left:50%; transform:translateX(-50%); bottom:16px; width:48px; height:48px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.72); color:#fff; border:none; cursor:pointer; box-shadow:0 4px 12px rgba(0,0,0,0.35); z-index:2; outline:none; font-size:24px; line-height:1; }
         .popup.fullscreen .close-fab:active { transform: translateX(-50%) scale(0.96); }
+        .fullscreen .popup_close_button {
+          position: absolute; top: 12px; right: 12px; z-index: 1003; width: 32px; height: 32px;
+          display: flex; align-items: center; justify-content: center;
+          border-radius: 16px; background: rgba(0,0,0,0.1); color: #fff; cursor: pointer;
+        }
 
         :host-context(html.pbc-no-scroll) body { overflow:hidden !important; }
 
-        /* 强制隐藏原生滚动条 */
         .popup, .popup.fullscreen .content-wrap {
-          scrollbar-width: none !important;
-          -ms-overflow-style: none !important;
+          scrollbar-width: none !important; -ms-overflow-style: none !important;
         }
-        .popup::-webkit-scrollbar, 
-        .popup.fullscreen .content-wrap::-webkit-scrollbar {
-          width: 0 !important;
-          height: 0 !important;
+        .popup::-webkit-scrollbar, .popup.fullscreen .content-wrap::-webkit-scrollbar {
           display: none !important;
         }
 
@@ -556,38 +570,16 @@ class PopupButtonCard extends HTMLElement {
           box-shadow:0px 2px 0px -2px rgba(0,0,0,0.12), 0px 1px 1px 0px rgba(0,0,0,0.10), 0px 1px 3px 0px rgba(0,0,0,0.10);
         }
 
-        /* 非全屏：背景模糊遮罩（仅当前实例之下），在本组件内部，由 z-index 串联控制 */
         .popup-overlay {
-          position: fixed;
-          inset: 0;
-          z-index: 1000; /* 低于 .popup(1001) 与 :host([data-active]) .toggle(1002) */
+          position: fixed; inset: 0; z-index: 1000;
           background: rgba(0,0,0,0.25);
-          backdrop-filter: blur(6px);
-          -webkit-backdrop-filter: blur(6px);
-          opacity: 0;
-          display: none;
-          pointer-events: none; /* 打开时才启用以拦截点击 */
-          touch-action: none; /* 禁止在遮罩上滚动/手势 */
+          backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+          opacity: 0; display: none; pointer-events: none; touch-action: none;
         }
         @keyframes overlayIn { from {opacity:0} to {opacity:1} }
         @keyframes overlayOut { from {opacity:1} to {opacity:0} }
         .popup-overlay[data-anim="open"]  { display:block; animation: overlayIn 220ms ease forwards; }
         .popup-overlay[data-anim="close"] { display:block; animation: overlayOut 180ms ease forwards; }
-        .fullscreen .popup_close_button {
-          position: absolute;
-          top: 12px;
-          right: 12px;
-          z-index: 1003; /* 确保高于模糊层 */
-          width: 32px;
-          height: 32px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          border-radius: 16px;
-          background: rgba(0,0,0,0.1);
-          color: #fff;
-          cursor: pointer;
-        }
       `;
       this.shadowRoot.appendChild(styleEl);
 
@@ -733,7 +725,7 @@ class PopupButtonCard extends HTMLElement {
         
         // 给予一个非常短暂的延迟（50毫秒）
         // 目的是让其他弹窗有足够的时间开始它们的关闭动画，从而实现平滑的过渡效果
-        setTimeout(() => this._actualToggle(), 10);
+        setTimeout(() => this._actualToggle(), 50);
         return; // 阻止后续代码立即执行
       }
     }
@@ -1241,8 +1233,7 @@ window.customCards = window.customCards || [];
 if (!window.customCards.some((c) => c.type === 'popup-button-card')) {
   window.customCards.push({ 
     type: 'popup-button-card', 
-    name: 'Popup Button Card v2.1.5', 
+    name: 'Popup Button Card v2.1.6', 
     description: '一个带弹窗的按钮卡片' 
   });
 }
-
