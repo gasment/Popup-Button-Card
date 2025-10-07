@@ -454,7 +454,7 @@ class PopupButtonCard extends HTMLElement {
       styleEl.textContent = `
         /* 1. 组件宿主：作为布局容器，决定组件在页面流中的位置和尺寸 */
         :host {
-          display: inline-flex;
+          display: block;
           outline: none;
           -webkit-tap-highlight-color: transparent;
         }
@@ -1237,3 +1237,4 @@ if (!window.customCards.some((c) => c.type === 'popup-button-card')) {
     description: '一个带弹窗的按钮卡片' 
   });
 }
+
