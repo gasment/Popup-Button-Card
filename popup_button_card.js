@@ -1,4 +1,4 @@
-//v2.1.8
+//v2.1.9
 class PopupButtonCard extends HTMLElement {
   constructor() {
     super();
@@ -563,6 +563,8 @@ class PopupButtonCard extends HTMLElement {
            max-width:95vw; max-height:95vh;
            touch-action:pan-y; overscroll-behavior:contain;
            margin:auto;
+           display:inline-block;     /* 1. 【关键】让容器表现为内联元素，宽度自动收缩包裹内容 */
+           flex:0 0 auto;     /* 2. 内部卡片垂直排列 */
         }
         .popup.fullscreen .close-fab { position:absolute; left:50%; transform:translateX(-50%); bottom:16px; width:48px; height:48px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.72); color:#fff; border:none; cursor:pointer; box-shadow:0 4px 12px rgba(0,0,0,0.35); z-index:2; outline:none; font-size:24px; line-height:1; }
         .popup.fullscreen .close-fab:active { transform: translateX(-50%) scale(0.96); }
@@ -782,7 +784,7 @@ class PopupButtonCard extends HTMLElement {
         window.dispatchEvent(new CustomEvent('expandable-close-others', { detail: this }));
       }
       
-      this._popupEl.style.display = 'block'; 
+      this._popupEl.style.display = (this._side === 'full_screen') ? 'flex' : 'block';
       this.positionPopup(); 
       this._updateContentOverflowScroll?.(); 
       restartAnim('open');
@@ -898,6 +900,13 @@ class PopupButtonCard extends HTMLElement {
       e.preventDefault();
     }
   };
+  _onOverlayTouchStart = (e) => {
+  // 仅在全屏下需要
+  if (this._side !== 'full_screen') return;
+  const t = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]);
+  if (t) this._lastTouchY = t.clientY;
+};
+
   _ensureFullscreenWrap() {
     if (this._contentWrap) { this._updateFsFooterReserve(); return; }
     const wrap = document.createElement('div');
@@ -938,20 +947,20 @@ class PopupButtonCard extends HTMLElement {
   
   _updateFsFooterReserve() {
     if (!this._contentWrap) return; 
-    const btnH = (this._closeBtn?.getBoundingClientRect().height || 48);
-    const bottomGapCfgList = this._config?.styles?.popup_close_button || []; 
-    const extraGap = Number(this._getStylePropFromList(bottomGapCfgList, 'bottom_gap')) || 16; 
-    const reserve = Math.round(btnH + 24 + extraGap);
+    // const btnH = (this._closeBtn?.getBoundingClientRect().height || 48);
+    const bottomGapCfgList = this._config?.styles?.content || []; 
+    // const extraGap = Number(this._getStylePropFromList(bottomGapCfgList, 'bottom_gap')) || 16; 
+    const reserve = Math.round(bottomGapCfgList);
     this._contentWrap.style.paddingBottom = `${reserve}px`;
   }
   
   _applyFullscreenSizeDefaults() {
     if (!this._contentWrap) return; 
-    const styles = this._config?.styles?.content || []; 
-    const hasW = this._getStylePropFromList(styles, 'width') != null; 
-    const hasH = this._getStylePropFromList(styles, 'height') != null; 
-    if (!hasW) this._contentWrap.style.width = '95vw'; 
-    if (!hasH) this._contentWrap.style.height = '95vh';
+    // const styles = this._config?.styles?.content || []; 
+    // const hasW = this._getStylePropFromList(styles, 'width') != null; 
+    // const hasH = this._getStylePropFromList(styles, 'height') != null; 
+    // if (!hasW) this._contentWrap.style.width = '95vw'; 
+    // if (!hasH) this._contentWrap.style.height = '95vh';
   }
   
   _destroyFullscreenWrap() {
@@ -971,6 +980,7 @@ class PopupButtonCard extends HTMLElement {
     this._popupEl.addEventListener('click', this._onOverlayGuardClick, { capture:true, passive:false });
     this._popupEl.addEventListener('pointerup', this._onOverlayGuardClick, { capture:true, passive:false });
     this._popupEl.addEventListener('touchend', this._onOverlayGuardClick, { capture:true, passive:false });
+    this._popupEl.addEventListener('touchstart', this._onOverlayTouchStart, { passive:false });
   }
   
   _teardownFullscreenOverlayListeners() {
@@ -981,19 +991,57 @@ class PopupButtonCard extends HTMLElement {
     this._popupEl.removeEventListener('click', this._onOverlayGuardClick, { capture:true });
     this._popupEl.removeEventListener('pointerup', this._onOverlayGuardClick, { capture:true });
     this._popupEl.removeEventListener('touchend', this._onOverlayGuardClick, { capture:true });
+    this._popupEl.removeEventListener('touchstart', this._onOverlayTouchStart, { passive:false })
     this._destroyFullscreenWrap();
   }
   
   _onOverlayWheelOrTouchMove(e) {
-    // 全屏：只允许 content-wrap 内滚动；否则若启用 outside blur，只允许 .popup 内滚动
+    // 全屏：只允许 content-wrap 内部滚，并且只在“确实能滚”时放行
     if (this._side === 'full_screen') {
-      const wrap = this._contentWrap; 
-      if (!wrap || !wrap.contains(e.target)) { 
-        e.preventDefault(); 
-        e.stopPropagation(); 
-      } 
+      const wrap = this._contentWrap;
+      if (!wrap) { e.preventDefault(); e.stopPropagation(); return; }
+
+      const inWrap = wrap.contains(e.target);
+      // 只要目标不在 wrap，直接拦截
+      if (!inWrap) { e.preventDefault(); e.stopPropagation(); return; }
+
+      const canScroll = wrap.scrollHeight > wrap.clientHeight + 1;
+      // wrap 本身不可滚 —— 直接拦截，防止滚动链
+      if (!canScroll) { e.preventDefault(); e.stopPropagation(); return; }
+
+      // 计算滚动意图 deltaY
+      let deltaY = 0;
+      if (e.type === 'wheel') {
+        // 桌面鼠标滚轮
+        deltaY = e.deltaY || 0;
+      } else if (e.type === 'touchmove') {
+        // 触屏：用 touchstart 记录的 Y 计算方向
+        const t = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]);
+        if (t && typeof this._lastTouchY === 'number') {
+          deltaY = this._lastTouchY - t.clientY; // 向下滚为正
+          this._lastTouchY = t.clientY;
+        } else {
+          // 没有基准，保守处理为 0：不放行边界
+          deltaY = 0;
+        }
+      }
+
+      // 边界判断
+      const atTop = wrap.scrollTop <= 0;
+      const atBottom = wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight - 1;
+
+      // 当已经到顶还继续上滑，或到底还继续下滑 —— 拦截，避免滚动链传到 body
+      if ((deltaY < 0 && atTop) || (deltaY > 0 && atBottom)) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+
+      // 其余情况：允许 wrap 自己处理滚动
       return;
     }
+
+    // 非全屏：保留你原来的 outside blur 逻辑
     if (this._config?.popup_outside_blur) {
       const inPopup = this._popupEl && (this._popupEl === e.target || this._popupEl.contains(e.target));
       if (!inPopup) {
@@ -1002,6 +1050,7 @@ class PopupButtonCard extends HTMLElement {
       }
     }
   }
+
   
   _onOverlayClickToClose(e) { 
     if (!this._overlayArmed || this._justOpened) return; 
@@ -1248,7 +1297,7 @@ window.customCards = window.customCards || [];
 if (!window.customCards.some((c) => c.type === 'popup-button-card')) {
   window.customCards.push({ 
     type: 'popup-button-card', 
-    name: 'Popup Button Card v2.1.8', 
+    name: 'Popup Button Card v2.1.9', 
     description: '一个带弹窗的按钮卡片' 
   });
 }
