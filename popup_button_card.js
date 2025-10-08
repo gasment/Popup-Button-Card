@@ -1,4 +1,4 @@
-//v2.2.3 pre-release
+//v2.2.3
 class PopupButtonCard extends HTMLElement {
   constructor() {
     super();
@@ -1451,7 +1451,7 @@ window.customCards = window.customCards || [];
 if (!window.customCards.some((c) => c.type === 'popup-button-card')) {
   window.customCards.push({ 
     type: 'popup-button-card', 
-    name: 'Popup Button Card v2.2.3-pre-release', 
+    name: 'Popup Button Card v2.2.3', 
     description: '一个带弹窗的按钮卡片' 
   });
 }
