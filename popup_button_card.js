@@ -1,4 +1,4 @@
-//v2.2.0
+//v2.2.1
 class PopupButtonCard extends HTMLElement {
   constructor() {
     super();
@@ -41,52 +41,92 @@ class PopupButtonCard extends HTMLElement {
     this._onExpandableYieldOthers = this._onExpandableYieldOthers.bind(this);
   }
 
-  // 任意交互 -> 延迟关闭（最小改动：监听 click 和 pointerup 即可）
+
+  // 订阅 hass.connection 的 call_service 事件
+  // 行为：弹窗内发生用户交互(点击/键盘/表单/触摸结束等)后，若随后捕捉到本用户的 call_service 事件，则在延迟后关闭。
   _armAnyTapToClose() {
     if (!this._popupEl) return;
-    // 开关：默认 false
-    const enabled = !!this._config?.any_tap_to_close_popup;
-    if (!enabled) return;
+    if (!this._config?.any_ha_action_to_close_popup) return;
 
     const delay = Number(this._config?.any_tap_close_delay_ms ?? 500);
+    const root = (this._side === 'full_screen') ? this._contentWrap : this._popupEl;
+    if (!root) return;
 
-    // 统一的调度器
+    // —— 调度关闭 —— //
     const schedule = () => {
-      // 打开后短暂 guard 期内不触发，避免误关（沿用已有的 guard）
-      if (this._shouldGuardInitialTap?.() || this._justOpened) return;
+      if (this._shouldGuardInitialTap?.() || this._justOpened) return; // 刚打开的保护期
       if (!this._open) return;
       if (this._anyTapCloseTimer) clearTimeout(this._anyTapCloseTimer);
-      this._anyTapCloseTimer = setTimeout(() => {
-        if (this._open) this.close();
-      }, delay);
+      this._anyTapCloseTimer = setTimeout(() => { if (this._open) this.close(); }, delay);
     };
 
-    // 只响应“弹窗内部”的交互：
-    // - 非全屏：整个 this._popupEl 内
-    // - 全屏：仅 content-wrap 内（点击遮罩外沿用原有逻辑关闭）
-    const handler = (e) => {
-      if (!this._open) return;
-      if (this._side === 'full_screen') {
-        if (this._contentWrap && this._contentWrap.contains(e.target)) schedule();
-      } else {
-        // 非全屏：在 popup 内部任意交互即可
-        if (this._popupEl && (this._popupEl === e.target || this._popupEl.contains(e.target))) schedule();
+    // —— 交互“引子”：记录最近一次弹窗内用户动作的时间戳 —— //
+    this._lastPopupUserActionTs = this._lastPopupUserActionTs ?? 0;
+    const markAction = () => { this._lastPopupUserActionTs = Date.now(); };
+
+    const onClick      = (e) => { if (root.contains(e.target)) markAction(); };
+    const onPointerUp  = (e) => { if (root.contains(e.target)) markAction(); };
+    const onKeyDown    = (e) => { if (root.contains(e.target)) markAction(); };
+    const onChange     = (e) => { if (root.contains(e.target)) markAction(); };
+    const onInput      = (e) => { if (root.contains(e.target)) markAction(); };
+    const onTouchEnd   = (e) => { if (root.contains(e.target)) markAction(); };
+
+    root.addEventListener('click', onClick, { capture: true });
+    root.addEventListener('pointerup', onPointerUp, { capture: true });
+    root.addEventListener('keydown', onKeyDown, { capture: true });
+    root.addEventListener('change', onChange, { capture: true });
+    root.addEventListener('input', onInput, { capture: true });
+    root.addEventListener('touchend', onTouchEnd, { capture: true });
+
+    // —— 仅监听，不拦截：订阅 call_service 事件 —— //
+    // 为降低误触发：要求 (1) 事件所属 user_id == 当前用户；(2) 事件发生在“引子交互”之后的短时间内
+    const PRIME_WINDOW_MS = 1500; // 交互引子后的匹配窗口，可按需调整
+    const currentUserId = this._hass?.user?.id;
+
+    const serviceEventHandler = (ev) => {
+      // ev 结构可能是 {event_type, data, time_fired, context, ...}，做兼容提取
+      const ctx = ev?.context || ev?.data?.context || {};
+      const userOk = !currentUserId || ctx.user_id === currentUserId;
+
+      const recentlyInPopup = (Date.now() - (this._lastPopupUserActionTs || 0)) <= PRIME_WINDOW_MS;
+
+      // 满足两个条件才认为是“弹窗触发的实体操作”
+      if (userOk && recentlyInPopup) {
+        schedule();
       }
     };
 
-    // 用捕获阶段能更稳地拿到事件（不改变原有冒泡处理）
-    this._popupEl.addEventListener('click', handler, { capture: true });
-    this._popupEl.addEventListener('pointerup', handler, { capture: true });
+    // 订阅事件（注意：subscribeEvents 返回 Promise<unsubscribe>）
+    this._unsubCallService = null;
+    try {
+      const conn = this._hass?.connection;
+      if (conn?.subscribeEvents) {
+        conn.subscribeEvents(serviceEventHandler, 'call_service')
+            .then(unsub => { this._unsubCallService = unsub; })
+            .catch(() => { /* 忽略订阅失败，不影响其它关闭通道 */ });
+      }
+    } catch { /* 忽略 */ }
 
-    // 记录清理器
+    // —— 清理：与既有清理器链式结合 —— //
+    const prevCleanup = this._anyTapCloseCleanup;
     this._anyTapCloseCleanup = () => {
       try {
-        this._popupEl.removeEventListener('click', handler, { capture: true });
-        this._popupEl.removeEventListener('pointerup', handler, { capture: true });
+        root.removeEventListener('click', onClick, { capture: true });
+        root.removeEventListener('pointerup', onPointerUp, { capture: true });
+        root.removeEventListener('keydown', onKeyDown, { capture: true });
+        root.removeEventListener('change', onChange, { capture: true });
+        root.removeEventListener('input', onInput, { capture: true });
+        root.removeEventListener('touchend', onTouchEnd, { capture: true });
       } catch {}
-      this._anyTapCloseCleanup = null;
+      if (this._unsubCallService) {
+        try { this._unsubCallService(); } catch {}
+        this._unsubCallService = null;
+      }
+      if (this._anyTapCloseTimer) { clearTimeout(this._anyTapCloseTimer); this._anyTapCloseTimer = null; }
+      if (prevCleanup) prevCleanup();
     };
   }
+
 
   _teardownAnyTapToClose() {
     if (this._anyTapCloseTimer) { clearTimeout(this._anyTapCloseTimer); this._anyTapCloseTimer = null; }
@@ -1356,7 +1396,7 @@ window.customCards = window.customCards || [];
 if (!window.customCards.some((c) => c.type === 'popup-button-card')) {
   window.customCards.push({ 
     type: 'popup-button-card', 
-    name: 'Popup Button Card v2.2.0', 
+    name: 'Popup Button Card v2.2.1', 
     description: '一个带弹窗的按钮卡片' 
   });
 }
