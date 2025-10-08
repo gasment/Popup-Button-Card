@@ -1,4 +1,4 @@
-//v2.1.9
+//v2.2.0
 class PopupButtonCard extends HTMLElement {
   constructor() {
     super();
@@ -25,6 +25,8 @@ class PopupButtonCard extends HTMLElement {
     this._gestureActive = false;   // 手势期标记
     this._anchorRectOnDown = null; // 手势按下瞬间缓存的锚点矩形
     this._scrollCloseCleanup = null; // up/down 滚动关闭的解绑函数
+    this._anyTapCloseTimer = null;
+    this._anyTapCloseCleanup = null;
     
     this._openGuardUntil = 0;
 
@@ -38,6 +40,60 @@ class PopupButtonCard extends HTMLElement {
     this._onWindowPointerUp = this._onWindowPointerUp.bind(this);
     this._onExpandableYieldOthers = this._onExpandableYieldOthers.bind(this);
   }
+
+  // 任意交互 -> 延迟关闭（最小改动：监听 click 和 pointerup 即可）
+  _armAnyTapToClose() {
+    if (!this._popupEl) return;
+    // 开关：默认 false
+    const enabled = !!this._config?.any_tap_to_close_popup;
+    if (!enabled) return;
+
+    const delay = Number(this._config?.any_tap_close_delay_ms ?? 500);
+
+    // 统一的调度器
+    const schedule = () => {
+      // 打开后短暂 guard 期内不触发，避免误关（沿用已有的 guard）
+      if (this._shouldGuardInitialTap?.() || this._justOpened) return;
+      if (!this._open) return;
+      if (this._anyTapCloseTimer) clearTimeout(this._anyTapCloseTimer);
+      this._anyTapCloseTimer = setTimeout(() => {
+        if (this._open) this.close();
+      }, delay);
+    };
+
+    // 只响应“弹窗内部”的交互：
+    // - 非全屏：整个 this._popupEl 内
+    // - 全屏：仅 content-wrap 内（点击遮罩外沿用原有逻辑关闭）
+    const handler = (e) => {
+      if (!this._open) return;
+      if (this._side === 'full_screen') {
+        if (this._contentWrap && this._contentWrap.contains(e.target)) schedule();
+      } else {
+        // 非全屏：在 popup 内部任意交互即可
+        if (this._popupEl && (this._popupEl === e.target || this._popupEl.contains(e.target))) schedule();
+      }
+    };
+
+    // 用捕获阶段能更稳地拿到事件（不改变原有冒泡处理）
+    this._popupEl.addEventListener('click', handler, { capture: true });
+    this._popupEl.addEventListener('pointerup', handler, { capture: true });
+
+    // 记录清理器
+    this._anyTapCloseCleanup = () => {
+      try {
+        this._popupEl.removeEventListener('click', handler, { capture: true });
+        this._popupEl.removeEventListener('pointerup', handler, { capture: true });
+      } catch {}
+      this._anyTapCloseCleanup = null;
+    };
+  }
+
+  _teardownAnyTapToClose() {
+    if (this._anyTapCloseTimer) { clearTimeout(this._anyTapCloseTimer); this._anyTapCloseTimer = null; }
+    if (this._anyTapCloseCleanup) this._anyTapCloseCleanup();
+  }
+
+
 
   /* ================== 模板系统：与 button-card 对齐 ================== */
   static _getLovelaceConfig() {
@@ -189,6 +245,7 @@ class PopupButtonCard extends HTMLElement {
     this.removeAttribute('data-opening');;
     this._pressable?.classList.remove('pressed','effect');
     this._pressable?.style?.removeProperty('--effect-color');
+    this._teardownAnyTapToClose();
   }
 
   _onExpandableCloseOthers = (e) => {
@@ -822,6 +879,7 @@ class PopupButtonCard extends HTMLElement {
       }
       
       this._bindUpdownCloseSources();
+      this._armAnyTapToClose(); 
       this._overlayArmed = false; 
       this._justOpened = true; 
       setTimeout(() => { 
@@ -831,6 +889,7 @@ class PopupButtonCard extends HTMLElement {
     } else {
            // 进入关闭阶段：保持高层级但禁用交互（由 CSS 控制 z-index 与 pointer-events）
      this.setAttribute('data-closing', '');
+     this._teardownAnyTapToClose();
      // 有外部模糊：延后到动画结束再移除视觉态；无外部模糊：可立即移除
      if (!this._config?.popup_outside_blur) this._pressable.classList.remove('pressed','effect');
       this._closingAnim = true; 
@@ -1297,7 +1356,7 @@ window.customCards = window.customCards || [];
 if (!window.customCards.some((c) => c.type === 'popup-button-card')) {
   window.customCards.push({ 
     type: 'popup-button-card', 
-    name: 'Popup Button Card v2.1.9', 
+    name: 'Popup Button Card v2.2.0', 
     description: '一个带弹窗的按钮卡片' 
   });
 }
