@@ -1,4 +1,4 @@
-//v2.2.2
+//v2.2.3 pre-release
 class PopupButtonCard extends HTMLElement {
   constructor() {
     super();
@@ -47,12 +47,14 @@ class PopupButtonCard extends HTMLElement {
     if (!this._popupEl) return;
     if (!this._config?.any_ha_action_to_close_popup) return;
 
+    const isFullscreen = this._side === 'full_screen';
+
     const delay = Number(this._config?.any_tap_close_delay_ms ?? 500);
     const PRIME_WINDOW_MS = Number(this._config?.any_tap_prime_window_ms ?? 1500);
     const closeOnMoreInfo = this._config?.close_on_more_info ?? true;
-    const moreInfoDelayMs = Number(this._config?.close_more_info_delay_ms ?? 50);
+    const moreInfoDelayMs = Number(this._config?.close_more_info_delay_ms ?? 150);
 
-    const root = (this._side === 'full_screen') ? this._contentWrap : this._popupEl;
+    const root = isFullscreen ? this._contentWrap : this._popupEl;
     if (!root) return;
 
     // ——— 调度器 ———
@@ -89,14 +91,52 @@ class PopupButtonCard extends HTMLElement {
     root.addEventListener('input', onInput, { capture: true });
     root.addEventListener('touchend', onTouchEnd, { capture: true });
 
-    // ——— 监听 hass-more-info：视为“要关”的动作（在授权窗口内）———
-    const onMoreInfo = (e) => {
+    // ——— 监听 hass-more-info：全屏=原始方案，非全屏=闸门方案 ———
+    const onMoreInfo = (ev) => {
       if (!closeOnMoreInfo) return;
-      // 不再苛求 e.target 属于 root；只要求“最近一次交互发生在弹窗内”，避免外部页面的 more-info 误关
-      if (!recentlyInPopup()) return;
-      // 给 more-info 一点点时间挂载，避免层级闪烁，再关闭弹窗
-      closeSoon(moreInfoDelayMs);
+      if (!this._open) return; // 只在本实例开着时管
+
+      const det = ev?.detail || {};
+
+      if (isFullscreen) {
+        // —— 全屏：保持你的原始处理 —— //
+        // 不苛求 ev.target 属于 root；只要最近交互发生在弹窗内
+        if (!recentlyInPopup()) return;
+        // 给 more-info 一点时间挂载，避免层级闪烁，再关闭弹窗
+        //closeSoon(moreInfoDelayMs);
+        closeSoon(10);
+        return;
+      }
+
+      // —— 非全屏：闸门方案 —— //
+      // 我们延迟后自己重派发的事件，带标记直接放行，避免循环
+      if (det.__pbc_gated) return;
+
+      // 触发条件：最近交互发生在弹窗里，或不允许多开 / 用了外部模糊
+      const shouldGate =
+        recentlyInPopup() || !this._config?.multi_expand || !!this._config?.popup_outside_blur;
+      if (!shouldGate) return;
+
+      // 1) 阻止这次“过早”的 more-info
+      ev.stopImmediatePropagation();
+      ev.preventDefault?.();
+
+      // 2) 广播收拢所有弹窗（detail 不传 this，避免被跳过）
+      window.dispatchEvent(new CustomEvent('expandable-yield-others', { detail: { source: 'more-info-gate' } }));
+      window.dispatchEvent(new CustomEvent('expandable-close-all',   { detail: { source: 'more-info-gate' } }));
+
+      // 3) 延迟后在同一目标上重派发（带 __pbc_gated 标记），真正打开 more-info
+      const openDelay = moreInfoDelayMs; // 复用你的配置延迟
+      const target = ev.target || window;
+      setTimeout(() => {
+        const re = new CustomEvent('hass-more-info', {
+          detail: { ...det, __pbc_gated: true },
+          bubbles: true, composed: true
+        });
+        try { target.dispatchEvent(re); } catch { window.dispatchEvent(re); }
+      }, openDelay);
     };
+
     window.addEventListener('hass-more-info', onMoreInfo, { capture: true });
 
     // ——— 监听 call_service：当前用户 + 授权窗口内 ———
@@ -140,6 +180,7 @@ class PopupButtonCard extends HTMLElement {
       if (prevCleanup) prevCleanup();
     };
   }
+
 
 
   _teardownAnyTapToClose() {
@@ -1410,7 +1451,7 @@ window.customCards = window.customCards || [];
 if (!window.customCards.some((c) => c.type === 'popup-button-card')) {
   window.customCards.push({ 
     type: 'popup-button-card', 
-    name: 'Popup Button Card v2.2.2', 
+    name: 'Popup Button Card v2.2.3-pre-release', 
     description: '一个带弹窗的按钮卡片' 
   });
 }
