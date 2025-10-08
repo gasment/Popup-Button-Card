@@ -127,10 +127,10 @@ template: my_template
                 }
             ]]]
     ```
-7、any_tap_to_close_popup，是否启用弹窗内的单次交互触发弹窗自动关闭
+7、any_ha_action_to_close_popup，是否启用弹窗内的单次ha action服务调用（实体操作）后，自动关闭弹窗
 ```
-any_tap_to_close_popup: true  #开启
-any_tap_to_close_popup: false #禁用
+any_ha_action_to_close_popup: true  #开启
+any_ha_action_to_close_popup: false #禁用
 ```
 8、updown_slide_to_close_popup，是否启用上下滑动屏幕时，自动收起弹窗
 ```
