@@ -304,6 +304,7 @@ expand_side: bottom
 button_effect: true
 button_effect_color: yellow
 updown_slide_to_close_popup: true
+any_ha_action_to_close_popup: fasle
 tap_action: popup
 hold_action: none
 multi_expand: true
