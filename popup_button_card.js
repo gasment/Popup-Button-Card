@@ -1,4 +1,4 @@
-//v2.2.3
+//v2.2.3-beta.4
 class PopupButtonCard extends HTMLElement {
   constructor() {
     super();
@@ -52,7 +52,7 @@ class PopupButtonCard extends HTMLElement {
     const delay = Number(this._config?.any_tap_close_delay_ms ?? 500);
     const PRIME_WINDOW_MS = Number(this._config?.any_tap_prime_window_ms ?? 1500);
     const closeOnMoreInfo = this._config?.close_on_more_info ?? true;
-    const moreInfoDelayMs = Number(this._config?.close_more_info_delay_ms ?? 150);
+    const moreInfoDelayMs = Number(this._config?.close_more_info_delay_ms ?? 250);
 
     const root = isFullscreen ? this._contentWrap : this._popupEl;
     if (!root) return;
@@ -99,12 +99,29 @@ class PopupButtonCard extends HTMLElement {
       const det = ev?.detail || {};
 
       if (isFullscreen) {
-        // —— 全屏：保持你的原始处理 —— //
-        // 不苛求 ev.target 属于 root；只要最近交互发生在弹窗内
+        // —— 全屏：拦截 + 延迟重派发（同时关闭当前弹窗） —— //
         if (!recentlyInPopup()) return;
-        // 给 more-info 一点时间挂载，避免层级闪烁，再关闭弹窗
-        //closeSoon(moreInfoDelayMs);
-        closeSoon(0);
+
+        const det    = ev?.detail || {};
+        const target = ev.target || window;
+        const openDelay = Number(this._config?.close_more_info_delay_ms ?? 250);
+
+        // ① 拦截这次 more-info，避免立刻打开
+        ev.stopImmediatePropagation();
+        ev.preventDefault?.();
+
+        // ② 现在/稍后关闭自己的弹窗（不影响 HA 的延迟打开）
+        closeSoon(0); // 或者用 openDelay 保持视觉一致：closeSoon(openDelay)
+
+        // ③ 延迟后重派发“带标记”的 hass-more-info，真正打开 more-info
+        setTimeout(() => {
+          const re = new CustomEvent('hass-more-info', {
+            detail: { ...det, __pbc_gated: true },
+            bubbles: true, composed: true
+          });
+          try { target.dispatchEvent(re); } catch { window.dispatchEvent(re); }
+        }, openDelay);
+
         return;
       }
 
@@ -1451,9 +1468,7 @@ window.customCards = window.customCards || [];
 if (!window.customCards.some((c) => c.type === 'popup-button-card')) {
   window.customCards.push({ 
     type: 'popup-button-card', 
-    name: 'Popup Button Card v2.2.3', 
+    name: 'Popup Button Card v2.2.3-beta.4', 
     description: '一个带弹窗的按钮卡片' 
   });
 }
-
-
