@@ -104,7 +104,7 @@ class PopupButtonCard extends HTMLElement {
         if (!recentlyInPopup()) return;
         // 给 more-info 一点时间挂载，避免层级闪烁，再关闭弹窗
         //closeSoon(moreInfoDelayMs);
-        closeSoon(10);
+        closeSoon(100);
         return;
       }
 
@@ -1455,3 +1455,4 @@ if (!window.customCards.some((c) => c.type === 'popup-button-card')) {
     description: '一个带弹窗的按钮卡片' 
   });
 }
+
