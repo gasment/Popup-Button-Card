@@ -127,19 +127,24 @@ template: my_template
                 }
             ]]]
     ```
-7、updown_slide_to_close_popup，是否启用上下滑动屏幕时，自动收起弹窗
+7、any_tap_to_close_popup，是否启用弹窗内的单次交互触发弹窗自动关闭
+```
+any_tap_to_close_popup: true  #开启
+any_tap_to_close_popup: false #禁用
+```
+8、updown_slide_to_close_popup，是否启用上下滑动屏幕时，自动收起弹窗
 ```
 updown_slide_to_close_popup: true  #开启
 updown_slide_to_close_popup: false #禁用
 ```
 
-8、multi_expand，是否启用单页面上的多个弹窗并存，最好同一页面的所有弹窗保持一致启用或禁用
+9、multi_expand，是否启用单页面上的多个弹窗并存，最好同一页面的所有弹窗保持一致启用或禁用
 ```
 multi_expand: true  #启用
 multi_expand: false  #禁用
 ```
 
-9、tap_action & hold_action，按钮点击&长按动作
+10、tap_action & hold_action，按钮点击&长按动作
  - 支持两种行为，popup & action，action使用官方卡片写法，也就是互动选项的yaml代码，两者写法一致
  - 点击打开弹窗
     ```
@@ -167,16 +172,16 @@ multi_expand: false  #禁用
     ```
  - ⚠️！tap和hold是互斥关系，只能取其一，比如点击打开弹窗必须配套长按操作电器，长按打开弹窗配套点击打开电器，两个效果如下：
 
- 10、popup_outside_blur，用于开启或关闭弹窗外部的背景模糊效果，注意开启popup_outside_blur后，multi_expand会失效
+ 11、popup_outside_blur，用于开启或关闭弹窗外部的背景模糊效果，注意开启popup_outside_blur后，multi_expand会失效
  ```
 popup_outside_blur: true #开启
 popup_outside_blur: false  #禁用
  ```
-11、styles，卡片内各元素的css样式定义，支持通用css样式插入，支持js模板返回值
+12、styles，卡片内各元素的css样式定义，支持通用css样式插入，支持js模板返回值
 styles目前支持的字段：content/button/name/label/state/icon/grid/overlay/popup_close_button/popup_outside_blur
 如果不清楚通用css属性的用法，直接问ai是最快捷的方式
 
-- 11、1 styles->content，设置弹窗外部包裹容器的样式，注意参考完整配置的缩进格式，这里可以设置弹窗的宽高，如果弹窗内卡片高度大于弹窗设定高度，将自动启用弹窗内的上下滑动
+- 12、1 styles->content，设置弹窗外部包裹容器的样式，注意参考完整配置的缩进格式，这里可以设置弹窗的宽高，如果弹窗内卡片高度大于弹窗设定高度，将自动启用弹窗内的上下滑动
     ```
     styles:
         content:
@@ -195,7 +200,7 @@ styles目前支持的字段：content/button/name/label/state/icon/grid/overlay/
                 - width: 85%
                 - margin-bottom: 100px  #底部边距
         ```
-- 11、2 styles->button，设置按钮的样式
+- 12、2 styles->button，设置按钮的样式
     ```
     styles:
         button:
@@ -211,7 +216,7 @@ styles目前支持的字段：content/button/name/label/state/icon/grid/overlay/
                 ]]]
             - border-radius: 10px  #按钮圆角
     ```
- - 11、3 styles->name/label/state，设置3个文本的样式
+ - 12、3 styles->name/label/state，设置3个文本的样式
     ```
     styles:
         name:
@@ -224,7 +229,7 @@ styles目前支持的字段：content/button/name/label/state/icon/grid/overlay/
         label: #同上
         state: #同上
     ```
-- 11、4 styles->icon，设置图标的样式
+- 12、4 styles->icon，设置图标的样式
     ```
     styles:
         icon:
@@ -232,7 +237,7 @@ styles目前支持的字段：content/button/name/label/state/icon/grid/overlay/
             - height: 40px #图标宽度
             - color: white  #图标颜色
     ```
-- 11、5 styles->grid，设置name/label/state/icon的布局位置，grid写法可直接参考button-card,此处不赘述了
+- 12、5 styles->grid，设置name/label/state/icon的布局位置，grid写法可直接参考button-card,此处不赘述了
     ```
     styles:
         grid:
@@ -244,7 +249,7 @@ styles目前支持的字段：content/button/name/label/state/icon/grid/overlay/
             - grid-template-rows: 25px 25px
             - justify-items: center
     ```
-- 11.6、 styles->overlay，仅全屏模式弹窗有效，设置弹窗卡片内容之外的背景样式
+- 12.6、 styles->overlay，仅全屏模式弹窗有效，设置弹窗卡片内容之外的背景样式
     - 不配置时为模糊效果，可以配置为纯色：
     ```
     styles:
@@ -252,7 +257,7 @@ styles目前支持的字段：content/button/name/label/state/icon/grid/overlay/
             - background: white #纯色
             - backdrop-filter: none
     ```
-- 11.7、 styles->popup_close_button，仅全屏模式有效，设置弹窗关闭按钮的样式
+- 12.7、 styles->popup_close_button，仅全屏模式有效，设置弹窗关闭按钮的样式
     ```
     styles:
         popup_close_button:
@@ -263,7 +268,7 @@ styles目前支持的字段：content/button/name/label/state/icon/grid/overlay/
             - color: white
             - font-size: 26px
     ```
-- 11、8 styles->popup_outside_blur，用于配置弹窗外的背景模糊量
+- 12、8 styles->popup_outside_blur，用于配置弹窗外的背景模糊量
     ```
     styles:
         popup_outside_blur:
@@ -275,7 +280,7 @@ styles目前支持的字段：content/button/name/label/state/icon/grid/overlay/
         popup_outside_blur:
             - background: rgba(255,255,255,0.5)
     ```
-12、content，弹窗内容，可在此处接上其他卡片的yaml代码，理论上支持所有卡片，但兼容性不一，需要自行测试
+13、content，弹窗内容，可在此处接上其他卡片的yaml代码，理论上支持所有卡片，但兼容性不一，需要自行测试
 ```
 
 content:
