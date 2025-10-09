@@ -1,4 +1,4 @@
-//v2.2.3-beta.4
+//v2.2.3-beta.5
 class PopupButtonCard extends HTMLElement {
   constructor() {
     super();
@@ -52,7 +52,7 @@ class PopupButtonCard extends HTMLElement {
     const delay = Number(this._config?.any_tap_close_delay_ms ?? 500);
     const PRIME_WINDOW_MS = Number(this._config?.any_tap_prime_window_ms ?? 1500);
     const closeOnMoreInfo = this._config?.close_on_more_info ?? true;
-    const moreInfoDelayMs = Number(this._config?.close_more_info_delay_ms ?? 250);
+    const moreInfoDelayMs = Number(this._config?.close_more_info_delay_ms ?? 500);
 
     const root = isFullscreen ? this._contentWrap : this._popupEl;
     if (!root) return;
@@ -709,10 +709,10 @@ class PopupButtonCard extends HTMLElement {
         
         .popup { position:fixed; z-index: 1001; pointer-events:auto; background:var(--card-background-color,#fff); border-radius:8px; padding:10px; box-shadow:0 4px 20px rgba(0,0,0,0.3); display:none; opacity:0; transform:scale(0.95); overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
         
-        @keyframes popupIn { from {opacity:0; transform:scale(0.95)} to {opacity:1; transform:scale(1)} }
+        @keyframes popupIn { from {opacity:0; transform:scale(0.85)} to {opacity:1; transform:scale(1)} }
         @keyframes popupOut{ from {opacity:1; transform:scale(1)} to {opacity:0; transform:scale(0.95)} }
-        .popup[data-anim="open"]  { display:block; animation: popupIn 220ms ease forwards; }
-        .popup[data-anim="close"] { display:block; animation: popupOut 180ms ease forwards; }
+        .popup[data-anim="open"]  { display:block; animation: popupIn 350ms ease forwards; }
+        .popup[data-anim="close"] { display:block; animation: popupOut 400ms ease forwards; }
 
         :host([data-closing]) .toggle { pointer-events: none; }
 
@@ -765,8 +765,32 @@ class PopupButtonCard extends HTMLElement {
         }
         @keyframes overlayIn { from {opacity:0} to {opacity:1} }
         @keyframes overlayOut { from {opacity:1} to {opacity:0} }
-        .popup-overlay[data-anim="open"]  { display:block; animation: overlayIn 220ms ease forwards; }
-        .popup-overlay[data-anim="close"] { display:block; animation: overlayOut 180ms ease forwards; }
+        .popup-overlay[data-anim="open"]  { display:block; animation: overlayIn 350ms ease forwards; }
+        .popup-overlay[data-anim="close"] { display:block; animation: overlayOut 400ms ease forwards; }
+
+
+        /* 全屏时：overlay(.popup.fullscreen) 只做透明度动画，不缩放 */
+        @keyframes fsOverlayIn  { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes fsOverlayOut { from { opacity: 1; } to { opacity: 0; } }
+        .popup.fullscreen[data-anim="open"]  { animation: fsOverlayIn 350ms ease forwards !important; }
+        .popup.fullscreen[data-anim="close"] { animation: fsOverlayOut 400ms ease forwards !important; }
+
+        /* 全屏时：内容卡片做缩放，但动画结束立刻回到 transform:none，避免层叠上下文残留 */
+        @keyframes fsContentInOnce {
+          0%   { opacity: 0; transform: scale(0.85); }
+          99.9%{ opacity: 1; transform: scale(1); }
+          100% { opacity: 1; transform: none; } /* 关键：收尾清掉 transform */
+        }
+        @keyframes fsContentOutOnce {
+          0%   { opacity: 1; transform: scale(1); }
+          80%  { opacity: 1; transform: scale(0.75); }
+          99.9%{ opacity: 0; transform: scale(0.75); }
+          100% { opacity: 0; transform: none; } /* 关键：收尾清掉 transform */
+        }
+
+        /* 应用到 content-wrap；不加 forwards，动画完毕立即回到无 transform 的状态 */
+        .popup.fullscreen[data-anim="open"]  .content-wrap { animation: fsContentInOnce 350ms ease; }
+        .popup.fullscreen[data-anim="close"] .content-wrap { animation: fsContentOutOnce 400ms ease; }
       `;
       this.shadowRoot.appendChild(styleEl);
 
@@ -1468,7 +1492,7 @@ window.customCards = window.customCards || [];
 if (!window.customCards.some((c) => c.type === 'popup-button-card')) {
   window.customCards.push({ 
     type: 'popup-button-card', 
-    name: 'Popup Button Card v2.2.3-beta.4', 
+    name: 'Popup Button Card v2.2.3-beta.5', 
     description: '一个带弹窗的按钮卡片' 
   });
 }
