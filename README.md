@@ -132,6 +132,20 @@ template: my_template
 any_ha_action_to_close_popup: true  #开启
 any_ha_action_to_close_popup: false #禁用
 ```
+- 附加选项：filter_for_ha_action_to_close_popup，any_ha_action_to_close_popup为true时可过滤特定操作触发自动关闭弹窗
+  ```
+  filter_for_ha_action_to_close_popup:
+    include_keyword:   #include关键词用于匹配触发自动关闭弹窗，可配置include_keyword：all，等同any_ha_action_to_close_popup: true,或者指定何种操作，哪个实体（如下）
+      - switch.entity
+      - light.entity
+      - light.turn_off
+      - switch.turn_off
+      - more-info
+      - navigation
+    exclude_keyword:   #exclude关键词用于匹配【不】触发自动关闭弹窗，可配置exclude_keyword：all，等同any_ha_action_to_close_popup: false,或者指定何种操作，哪个实体（如下）
+      - vacuum.start
+      - sensor.entity
+  ```
 8、updown_slide_to_close_popup，是否启用上下滑动屏幕时，自动收起弹窗
 ```
 updown_slide_to_close_popup: true  #开启
