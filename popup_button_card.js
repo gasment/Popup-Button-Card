@@ -1,4 +1,4 @@
-//v2.2.3
+//v2.2.4
 class PopupButtonCard extends HTMLElement {
   constructor() {
     super();
@@ -91,12 +91,55 @@ class PopupButtonCard extends HTMLElement {
     root.addEventListener('input', onInput, { capture: true });
     root.addEventListener('touchend', onTouchEnd, { capture: true });
 
+    /* ===================== 修改开始：过滤工具与使用 ===================== */
+    // —— 过滤工具 —— //
+    const _normalizeList = (v) => {
+      if (v == null) return [];
+      if (typeof v === 'string') return v.trim().toLowerCase() === 'all' ? 'all' : [v];
+      if (Array.isArray(v)) return v.map(x => String(x ?? '').toLowerCase());
+      return [];
+    };
+
+    const _shouldCloseByFilter = (kind, text) => {
+      // 未配置过滤：保持旧逻辑
+      const filterCfg = this._config?.filter_for_ha_action_to_close_popup;
+      if (!filterCfg) return true;
+
+      const include = _normalizeList(filterCfg.include_keyword);
+      const exclude = _normalizeList(filterCfg.exclude_keyword);
+
+      const hay = String([kind, text].filter(Boolean).join(' ')).toLowerCase();
+
+      // 全拦截
+      if (exclude === 'all') return false;
+      // 全放行
+      if (include === 'all') return true;
+
+      // 命中 exclude → 不触发
+      if (Array.isArray(exclude) && exclude.length && exclude.some(k => k && hay.includes(k))) return false;
+
+      // include 非空 → 需命中 include 才触发
+      if (Array.isArray(include) && include.length) {
+        return include.some(k => k && hay.includes(k));
+      }
+
+      // include 为空：默认放行（旧逻辑）
+      return true;
+    };
+    /* ===================== 修改结束：过滤工具与使用 ===================== */
+
     // ——— 监听 hass-more-info：全屏=原始方案，非全屏=闸门方案 ———
     const onMoreInfo = (ev) => {
       if (!closeOnMoreInfo) return;
       if (!this._open) return; // 只在本实例开着时管
 
       const det = ev?.detail || {};
+
+      /* ===================== 修改开始：more-info 过滤早退 ===================== */
+      const entityIdForFilter = det?.entityId || det?.entity || det?.entity_id || '';
+      const textForFilterMoreInfo = `more-info ${entityIdForFilter}`;
+      if (!_shouldCloseByFilter('more-info', textForFilterMoreInfo)) return;
+      /* ===================== 修改结束：more-info 过滤早退 ===================== */
 
       if (isFullscreen) {
         // —— 全屏：拦截 + 延迟重派发（同时关闭当前弹窗） —— //
@@ -164,6 +207,20 @@ class PopupButtonCard extends HTMLElement {
       const userOk = !!ctx.user_id && ctx.user_id === currentUserId;
       if (!userOk) return;
       if (!recentlyInPopup()) return;
+
+      /* ===================== 修改开始：call_service 过滤 ===================== */
+      const d = ev?.data || {};
+      const domain = d.domain || '';
+      const service = d.service || '';
+      const ents = []
+        .concat(d?.service_data?.entity_id || [])
+        .concat(d?.service_data?.entityIds || [])
+        .filter(Boolean)
+        .join(' ');
+      const textForFilterSvc = `${domain}.${service} ${ents}`.trim();
+      if (!_shouldCloseByFilter('call_service', textForFilterSvc)) return;
+      /* ===================== 修改结束：call_service 过滤 ===================== */
+
       schedule();
     };
 
@@ -177,6 +234,19 @@ class PopupButtonCard extends HTMLElement {
       }
     } catch { /* 忽略 */ }
 
+    /* ===================== 修改开始：新增监听 hass-navigate 以参与过滤 ===================== */
+    const onNavigate = (ev) => {
+      if (!this._open) return;
+      if (!recentlyInPopup()) return;
+      // 你的 _handleHaAction('navigate') 会 fire('hass-navigate', { path })
+      const path = ev?.detail?.path || ev?.detail?.url || ev?.detail || '';
+      const textForFilterNav = `navigation ${path}`;
+      if (!_shouldCloseByFilter('navigation', textForFilterNav)) return;
+      schedule();
+    };
+    window.addEventListener('hass-navigate', onNavigate, { capture: true });
+    /* ===================== 修改结束：新增监听 hass-navigate 以参与过滤 ===================== */
+
     // ——— 清理 ———
     const prevCleanup = this._anyTapCloseCleanup;
     this._anyTapCloseCleanup = () => {
@@ -188,6 +258,9 @@ class PopupButtonCard extends HTMLElement {
         root.removeEventListener('input', onInput, { capture: true });
         root.removeEventListener('touchend', onTouchEnd, { capture: true });
         window.removeEventListener('hass-more-info', onMoreInfo, { capture: true });
+        /* ===================== 修改开始：移除 hass-navigate 监听 ===================== */
+        window.removeEventListener('hass-navigate', onNavigate, { capture: true });
+        /* ===================== 修改结束：移除 hass-navigate 监听 ===================== */
       } catch {}
       if (this._unsubCallService) {
         try { this._unsubCallService(); } catch {}
@@ -1388,7 +1461,7 @@ class PopupButtonCard extends HTMLElement {
         if (!domain || !service) return; 
         const data = actionCfg.service_data || actionCfg.data || {}; 
         const target = actionCfg.target; 
-        hass.callService(domain, service, data, target); 
+        hass.callService('homeassistant'==='homeassistant'?domain:domain, service, data, target); 
         break; 
       }
       case 'more-info': { 
@@ -1492,7 +1565,7 @@ window.customCards = window.customCards || [];
 if (!window.customCards.some((c) => c.type === 'popup-button-card')) {
   window.customCards.push({ 
     type: 'popup-button-card', 
-    name: 'Popup Button Card v2.2.3', 
+    name: 'Popup Button Card v2.2.4', 
     description: '一个带弹窗的按钮卡片' 
   });
 }
