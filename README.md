@@ -246,11 +246,11 @@ A homeassistant customizable card with a button &amp; a popup window
       card:
         type: vertical-stack
         cards:
-        - type: button
+          - type: button
             show_name: true
             show_icon: true
             entity: switch.ui_lovelace_minimalist_pre_release
-        - type: light
+          - type: light
             entity: light.xxxx_light
     ```
 2. 外部引用，适合复杂、yaml配置量大的卡片，方便独立维护与修改，支持跨视图引用。示例：
