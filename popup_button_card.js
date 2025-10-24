@@ -1,4 +1,95 @@
-//v2.2.4
+//v2.2.5
+/* === NEW: 在 Lovelace 配置里查找 content_id 对应的内容源 === */
+function __pbcFindContentInConfig(rootCfg, targetId) {
+  if (!rootCfg || !targetId) return null;
+  const id = String(targetId);
+
+  const visitCard = (card) => {
+    if (!card || typeof card !== 'object') return null;
+
+    // 命中内容源：type + card_function + content_id
+    const t = (card.type || '').toLowerCase();
+    const isPBC = t === 'custom:popup-button-card' || t === 'popup-button-card';
+    if (isPBC && (card.card_function || 'button') === 'content' && String(card.content_id || '') === id) {
+      const c = card.content || {};
+      if (Array.isArray(c.cards)) return { type: 'vertical-stack', cards: c.cards };
+      if (c.card) return c.card;
+      return { type: 'markdown', content: `⚠️ 内容源 #${id} 未提供 content.card 或 content.cards` };
+    }
+
+    // 递归常见容器
+    const arrayKeys = ['cards', 'elements', 'badges', 'sections'];
+    for (const k of arrayKeys) {
+      const arr = card[k];
+      if (Array.isArray(arr)) {
+        for (const sub of arr) {
+          // sections 里通常仍然有 cards
+          if (k === 'sections' && sub && Array.isArray(sub.cards)) {
+            for (const c2 of sub.cards) {
+              const r = visitCard(c2);
+              if (r) return r;
+            }
+          } else {
+            const r = visitCard(sub);
+            if (r) return r;
+          }
+        }
+      }
+    }
+    // 支持 stack-in-card 等的单个 card
+    if (card.card && typeof card.card === 'object') {
+      const r = visitCard(card.card);
+      if (r) return r;
+    }
+    return null;
+  };
+
+  // 遍历各个视图
+  const views = Array.isArray(rootCfg?.views) ? rootCfg.views : [];
+  for (const v of views) {
+    // 直接 cards
+    if (Array.isArray(v.cards)) {
+      for (const c of v.cards) {
+        const r = visitCard(c);
+        if (r) return r;
+      }
+    }
+    // Masonry sections / Grid sections
+    if (Array.isArray(v.sections)) {
+      for (const s of v.sections) {
+        if (Array.isArray(s.cards)) {
+          for (const c of s.cards) {
+            const r = visitCard(c);
+            if (r) return r;
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/* === NEW: 全局内容注册表（供按钮用 from_id 引用） === */
+window.__pbcContentRegistry = window.__pbcContentRegistry || new Map();
+/**
+ * 注册内容源
+ * @param {string} id
+ * @param {{getConfig:()=>object, getKey:()=>string}} provider
+ */
+function __pbcRegisterContent(id, provider) {
+  if (!id) return;
+  window.__pbcContentRegistry.set(String(id), provider);
+}
+function __pbcUnregisterContent(id, provider) {
+  const key = String(id || '');
+  const cur = window.__pbcContentRegistry.get(key);
+  if (cur === provider) window.__pbcContentRegistry.delete(key);
+}
+function __pbcLookupContent(id) {
+  if (!id) return null;
+  return window.__pbcContentRegistry.get(String(id));
+}
+
 class PopupButtonCard extends HTMLElement {
   constructor() {
     super();
@@ -27,8 +118,14 @@ class PopupButtonCard extends HTMLElement {
     this._scrollCloseCleanup = null; // up/down 滚动关闭的解绑函数
     this._anyTapCloseTimer = null;
     this._anyTapCloseCleanup = null;
-    
     this._openGuardUntil = 0;
+
+    // === NEW: 内容源模式相关 ===
+    this._cardFunction = 'button';   // 'button' | 'content'
+    this._contentId = null;          // 内容源 id
+    this._editModeTimer = null;      // 轮询编辑态
+    this._contentHost = null;        // content 模式下的承载节点（仅编辑态可见）
+    this._contentProvider = null;    // 注册到全局表的 provider
 
     // 绑定实例级事件处理器
     this._onWindowPointerDownCapture = this._onWindowPointerDownCapture.bind(this);
@@ -41,246 +138,7 @@ class PopupButtonCard extends HTMLElement {
     this._onExpandableYieldOthers = this._onExpandableYieldOthers.bind(this);
   }
 
-
-// 监听 call_service + hass-more-info 的智能延迟关闭
-  _armAnyTapToClose() {
-    if (!this._popupEl) return;
-    if (!this._config?.any_ha_action_to_close_popup) return;
-
-    const isFullscreen = this._side === 'full_screen';
-
-    const delay = Number(this._config?.any_tap_close_delay_ms ?? 500);
-    const PRIME_WINDOW_MS = Number(this._config?.any_tap_prime_window_ms ?? 1500);
-    const closeOnMoreInfo = this._config?.close_on_more_info ?? true;
-    const moreInfoDelayMs = Number(this._config?.close_more_info_delay_ms ?? 500);
-
-    const root = isFullscreen ? this._contentWrap : this._popupEl;
-    if (!root) return;
-
-    // ——— 调度器 ———
-    const schedule = () => {
-      if (this._shouldGuardInitialTap?.() || this._justOpened) return; // 刚打开保护期
-      if (!this._open) return;
-      if (this._anyTapCloseTimer) clearTimeout(this._anyTapCloseTimer);
-      this._anyTapCloseTimer = setTimeout(() => { if (this._open) this.close(); }, delay);
-    };
-
-    // 绕过保护期用于“立即/短延迟”关闭（给 hass-more-info 用）
-    const closeSoon = (ms = 0) => {
-      if (!this._open) return;
-      if (this._anyTapCloseTimer) clearTimeout(this._anyTapCloseTimer);
-      this._anyTapCloseTimer = setTimeout(() => { if (this._open) this.close(); }, ms);
-    };
-
-    // ——— 交互引子：记录最近一次弹窗内用户动作时间戳 ———
-    this._lastPopupUserActionTs = this._lastPopupUserActionTs ?? 0;
-    const markAction = () => { this._lastPopupUserActionTs = Date.now(); };
-    const recentlyInPopup = () => (Date.now() - (this._lastPopupUserActionTs || 0)) <= PRIME_WINDOW_MS;
-
-    const onClick     = (e) => { if (root.contains(e.target)) markAction(); };
-    const onPointerUp = (e) => { if (root.contains(e.target)) markAction(); };
-    const onKeyDown   = (e) => { if (root.contains(e.target)) markAction(); };
-    const onChange    = (e) => { if (root.contains(e.target)) markAction(); };
-    const onInput     = (e) => { if (root.contains(e.target)) markAction(); };
-    const onTouchEnd  = (e) => { if (root.contains(e.target)) markAction(); };
-
-    root.addEventListener('click', onClick, { capture: true });
-    root.addEventListener('pointerup', onPointerUp, { capture: true });
-    root.addEventListener('keydown', onKeyDown, { capture: true });
-    root.addEventListener('change', onChange, { capture: true });
-    root.addEventListener('input', onInput, { capture: true });
-    root.addEventListener('touchend', onTouchEnd, { capture: true });
-
-    /* ===================== 修改开始：过滤工具与使用 ===================== */
-    // —— 过滤工具 —— //
-    const _normalizeList = (v) => {
-      if (v == null) return [];
-      if (typeof v === 'string') return v.trim().toLowerCase() === 'all' ? 'all' : [v];
-      if (Array.isArray(v)) return v.map(x => String(x ?? '').toLowerCase());
-      return [];
-    };
-
-    const _shouldCloseByFilter = (kind, text) => {
-      // 未配置过滤：保持旧逻辑
-      const filterCfg = this._config?.filter_for_ha_action_to_close_popup;
-      if (!filterCfg) return true;
-
-      const include = _normalizeList(filterCfg.include_keyword);
-      const exclude = _normalizeList(filterCfg.exclude_keyword);
-
-      const hay = String([kind, text].filter(Boolean).join(' ')).toLowerCase();
-
-      // 全拦截
-      if (exclude === 'all') return false;
-      // 全放行
-      if (include === 'all') return true;
-
-      // 命中 exclude → 不触发
-      if (Array.isArray(exclude) && exclude.length && exclude.some(k => k && hay.includes(k))) return false;
-
-      // include 非空 → 需命中 include 才触发
-      if (Array.isArray(include) && include.length) {
-        return include.some(k => k && hay.includes(k));
-      }
-
-      // include 为空：默认放行（旧逻辑）
-      return true;
-    };
-    /* ===================== 修改结束：过滤工具与使用 ===================== */
-
-    // ——— 监听 hass-more-info：全屏=原始方案，非全屏=闸门方案 ———
-    const onMoreInfo = (ev) => {
-      if (!closeOnMoreInfo) return;
-      if (!this._open) return; // 只在本实例开着时管
-
-      const det = ev?.detail || {};
-
-      /* ===================== 修改开始：more-info 过滤早退 ===================== */
-      const entityIdForFilter = det?.entityId || det?.entity || det?.entity_id || '';
-      const textForFilterMoreInfo = `more-info ${entityIdForFilter}`;
-      if (!_shouldCloseByFilter('more-info', textForFilterMoreInfo)) return;
-      /* ===================== 修改结束：more-info 过滤早退 ===================== */
-
-      if (isFullscreen) {
-        // —— 全屏：拦截 + 延迟重派发（同时关闭当前弹窗） —— //
-        if (!recentlyInPopup()) return;
-
-        const det    = ev?.detail || {};
-        const target = ev.target || window;
-        const openDelay = Number(this._config?.close_more_info_delay_ms ?? 250);
-
-        // ① 拦截这次 more-info，避免立刻打开
-        ev.stopImmediatePropagation();
-        ev.preventDefault?.();
-
-        // ② 现在/稍后关闭自己的弹窗（不影响 HA 的延迟打开）
-        closeSoon(0); // 或者用 openDelay 保持视觉一致：closeSoon(openDelay)
-
-        // ③ 延迟后重派发“带标记”的 hass-more-info，真正打开 more-info
-        setTimeout(() => {
-          const re = new CustomEvent('hass-more-info', {
-            detail: { ...det, __pbc_gated: true },
-            bubbles: true, composed: true
-          });
-          try { target.dispatchEvent(re); } catch { window.dispatchEvent(re); }
-        }, openDelay);
-
-        return;
-      }
-
-      // —— 非全屏：闸门方案 —— //
-      // 我们延迟后自己重派发的事件，带标记直接放行，避免循环
-      if (det.__pbc_gated) return;
-
-      // 触发条件：最近交互发生在弹窗里，或不允许多开 / 用了外部模糊
-      const shouldGate =
-        recentlyInPopup() || !this._config?.multi_expand || !!this._config?.popup_outside_blur;
-      if (!shouldGate) return;
-
-      // 1) 阻止这次“过早”的 more-info
-      ev.stopImmediatePropagation();
-      ev.preventDefault?.();
-
-      // 2) 广播收拢所有弹窗（detail 不传 this，避免被跳过）
-      window.dispatchEvent(new CustomEvent('expandable-yield-others', { detail: { source: 'more-info-gate' } }));
-      window.dispatchEvent(new CustomEvent('expandable-close-all',   { detail: { source: 'more-info-gate' } }));
-
-      // 3) 延迟后在同一目标上重派发（带 __pbc_gated 标记），真正打开 more-info
-      const openDelay = moreInfoDelayMs; // 复用你的配置延迟
-      const target = ev.target || window;
-      setTimeout(() => {
-        const re = new CustomEvent('hass-more-info', {
-          detail: { ...det, __pbc_gated: true },
-          bubbles: true, composed: true
-        });
-        try { target.dispatchEvent(re); } catch { window.dispatchEvent(re); }
-      }, openDelay);
-    };
-
-    window.addEventListener('hass-more-info', onMoreInfo, { capture: true });
-
-    // ——— 监听 call_service：当前用户 + 授权窗口内 ———
-    const currentUserId = this._hass?.user?.id;
-    const serviceEventHandler = (ev) => {
-      // ev 可能是 {event_type, data, time_fired, context, ...}
-      const ctx = ev?.context || ev?.data?.context || {};
-      const userOk = !!ctx.user_id && ctx.user_id === currentUserId;
-      if (!userOk) return;
-      if (!recentlyInPopup()) return;
-
-      /* ===================== 修改开始：call_service 过滤 ===================== */
-      const d = ev?.data || {};
-      const domain = d.domain || '';
-      const service = d.service || '';
-      const ents = []
-        .concat(d?.service_data?.entity_id || [])
-        .concat(d?.service_data?.entityIds || [])
-        .filter(Boolean)
-        .join(' ');
-      const textForFilterSvc = `${domain}.${service} ${ents}`.trim();
-      if (!_shouldCloseByFilter('call_service', textForFilterSvc)) return;
-      /* ===================== 修改结束：call_service 过滤 ===================== */
-
-      schedule();
-    };
-
-    this._unsubCallService = null;
-    try {
-      const conn = this._hass?.connection;
-      if (conn?.subscribeEvents) {
-        conn.subscribeEvents(serviceEventHandler, 'call_service')
-            .then(unsub => { this._unsubCallService = unsub; })
-            .catch(() => { /* 忽略订阅失败，不影响其它关闭路径 */ });
-      }
-    } catch { /* 忽略 */ }
-
-    /* ===================== 修改开始：新增监听 hass-navigate 以参与过滤 ===================== */
-    const onNavigate = (ev) => {
-      if (!this._open) return;
-      if (!recentlyInPopup()) return;
-      // 你的 _handleHaAction('navigate') 会 fire('hass-navigate', { path })
-      const path = ev?.detail?.path || ev?.detail?.url || ev?.detail || '';
-      const textForFilterNav = `navigation ${path}`;
-      if (!_shouldCloseByFilter('navigation', textForFilterNav)) return;
-      schedule();
-    };
-    window.addEventListener('hass-navigate', onNavigate, { capture: true });
-    /* ===================== 修改结束：新增监听 hass-navigate 以参与过滤 ===================== */
-
-    // ——— 清理 ———
-    const prevCleanup = this._anyTapCloseCleanup;
-    this._anyTapCloseCleanup = () => {
-      try {
-        root.removeEventListener('click', onClick, { capture: true });
-        root.removeEventListener('pointerup', onPointerUp, { capture: true });
-        root.removeEventListener('keydown', onKeyDown, { capture: true });
-        root.removeEventListener('change', onChange, { capture: true });
-        root.removeEventListener('input', onInput, { capture: true });
-        root.removeEventListener('touchend', onTouchEnd, { capture: true });
-        window.removeEventListener('hass-more-info', onMoreInfo, { capture: true });
-        /* ===================== 修改开始：移除 hass-navigate 监听 ===================== */
-        window.removeEventListener('hass-navigate', onNavigate, { capture: true });
-        /* ===================== 修改结束：移除 hass-navigate 监听 ===================== */
-      } catch {}
-      if (this._unsubCallService) {
-        try { this._unsubCallService(); } catch {}
-        this._unsubCallService = null;
-      }
-      if (this._anyTapCloseTimer) { clearTimeout(this._anyTapCloseTimer); this._anyTapCloseTimer = null; }
-      if (prevCleanup) prevCleanup();
-    };
-  }
-
-
-
-  _teardownAnyTapToClose() {
-    if (this._anyTapCloseTimer) { clearTimeout(this._anyTapCloseTimer); this._anyTapCloseTimer = null; }
-    if (this._anyTapCloseCleanup) this._anyTapCloseCleanup();
-  }
-
-
-
-  /* ================== 模板系统：与 button-card 对齐 ================== */
+  /* ================== Lovelace/模板系统工具 ================== */
   static _getLovelaceConfig() {
     try {
       const ha = document.querySelector("home-assistant");
@@ -290,6 +148,20 @@ class PopupButtonCard extends HTMLElement {
       const panel = root?.querySelector("ha-panel-lovelace");
       return panel?.lovelace?.config;
     } catch (e) { return undefined; }
+  }
+  static _getLovelace() {
+    try {
+      const ha = document.querySelector('home-assistant');
+      const main = ha?.shadowRoot?.querySelector('home-assistant-main');
+      const drawer = main?.shadowRoot?.querySelector('app-drawer-layout partial-panel-resolver');
+      const root = (drawer?.shadowRoot || main?.shadowRoot);
+      const panel = root?.querySelector('ha-panel-lovelace');
+      return panel?.lovelace;
+    } catch { return undefined; }
+  }
+  static _isEditMode() {
+    const ll = PopupButtonCard._getLovelace();
+    return !!ll?.editMode;
   }
   static _getGlobalTemplates() {
     const cfg = PopupButtonCard._getLovelaceConfig();
@@ -400,6 +272,14 @@ class PopupButtonCard extends HTMLElement {
     setTimeout(() => {
       this.style.transform = '';
     }, 0);
+
+    // === NEW: 内容源模式下，轮询编辑态以控制可见性 ===
+    if (this._cardFunction === 'content') {
+      this._updateEditVisibility();
+      if (!this._editModeTimer) {
+        this._editModeTimer = setInterval(() => this._updateEditVisibility(), 500);
+      }
+    }
   }
 
   disconnectedCallback() {
@@ -431,6 +311,13 @@ class PopupButtonCard extends HTMLElement {
     this._pressable?.classList.remove('pressed','effect');
     this._pressable?.style?.removeProperty('--effect-color');
     this._teardownAnyTapToClose();
+
+    // === NEW: 清理编辑态计时器 & 从注册表注销 ===
+    if (this._editModeTimer) { clearInterval(this._editModeTimer); this._editModeTimer = null; }
+    if (this._cardFunction === 'content' && this._contentProvider && this._contentId) {
+      __pbcUnregisterContent(this._contentId, this._contentProvider);
+      this._contentProvider = null;
+    }
   }
 
   _onExpandableCloseOthers = (e) => {
@@ -467,10 +354,23 @@ class PopupButtonCard extends HTMLElement {
   };
 
    /* ================= Home Assistant ================= */
-  set hass(hass) { this._hass = hass; if (this._contentCard) this._contentCard.hass = hass; this.updateDynamicContent(); }
+  set hass(hass) { 
+    this._hass = hass; 
+    if (this._contentCard) this._contentCard.hass = hass; 
+    this.updateDynamicContent(); 
+    // 内容源容器中的子卡片（编辑态可见）也同步 hass
+    if (this._contentHost && this._contentHost.lastElementChild && this._contentHost.lastElementChild.hass === undefined) {
+      try { this._contentHost.lastElementChild.hass = hass; } catch {}
+    }
+  }
   
   setConfig(config) {
     this._rawConfig = config || {};
+
+    // === NEW: 读 card_function 与 content_id（默认 button） ===
+    this._cardFunction = (this._rawConfig.card_function || 'button');
+    this._contentId = this._rawConfig.content_id || null;
+
     const { finalCfg, finalVars } = this._resolveTemplatesAndVariables(this._rawConfig);
     this._variables = finalVars || {};
     // 1. 将原始的、未解析的最终配置存储在一个私有属性中。
@@ -482,7 +382,6 @@ class PopupButtonCard extends HTMLElement {
       get: (target, prop) => {
         // 当代码尝试获取配置属性时，这个函数会自动运行。
         const rawValue = target[prop];
-        
         //直接调用现有的 evaluateTemplate 方法。
         return this.evaluateTemplate(rawValue);
       }
@@ -491,7 +390,20 @@ class PopupButtonCard extends HTMLElement {
     this._computeFsOverlayClickFlag();
     this._tapAction  = this._config.tap_action;
     this._holdAction = this._config.hold_action;
-    if (!this.shadowRoot) this._render(); else { this.updateDynamicContent(); this.loadContent(); if (this._open) this.positionPopup(); }
+
+    if (!this.shadowRoot) {
+      this._render();
+    }
+
+    // === NEW: 分流 ===
+    if (this._cardFunction === 'content') {
+      this._renderAsContentSource();      // 只在编辑态显示
+    } else {
+      // 原 button 流程
+      this.updateDynamicContent();
+      this.loadContent();
+      if (this._open) this.positionPopup();
+    }
   }
 
 
@@ -805,8 +717,8 @@ class PopupButtonCard extends HTMLElement {
            max-width:95vw; max-height:95vh;
            touch-action:pan-y; overscroll-behavior:contain;
            margin:auto;
-           display:inline-block;     /* 1. 【关键】让容器表现为内联元素，宽度自动收缩包裹内容 */
-           flex:0 0 auto;     /* 2. 内部卡片垂直排列 */
+           display:inline-block;
+           flex:0 0 auto;
         }
         .popup.fullscreen .close-fab { position:absolute; left:50%; transform:translateX(-50%); bottom:16px; width:48px; height:48px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.72); color:#fff; border:none; cursor:pointer; box-shadow:0 4px 12px rgba(0,0,0,0.35); z-index:2; outline:none; font-size:24px; line-height:1; }
         .popup.fullscreen .close-fab:active { transform: translateX(-50%) scale(0.96); }
@@ -841,27 +753,22 @@ class PopupButtonCard extends HTMLElement {
         .popup-overlay[data-anim="open"]  { display:block; animation: overlayIn 350ms ease forwards; }
         .popup-overlay[data-anim="close"] { display:block; animation: overlayOut 400ms ease forwards; }
 
-
-        /* 全屏时：overlay(.popup.fullscreen) 只做透明度动画，不缩放 */
         @keyframes fsOverlayIn  { from { opacity: 0; } to { opacity: 1; } }
         @keyframes fsOverlayOut { from { opacity: 1; } to { opacity: 0; } }
         .popup.fullscreen[data-anim="open"]  { animation: fsOverlayIn 350ms ease forwards !important; }
         .popup.fullscreen[data-anim="close"] { animation: fsOverlayOut 400ms ease forwards !important; }
 
-        /* 全屏时：内容卡片做缩放，但动画结束立刻回到 transform:none，避免层叠上下文残留 */
         @keyframes fsContentInOnce {
           0%   { opacity: 0; transform: scale(0.85); }
           99.9%{ opacity: 1; transform: scale(1); }
-          100% { opacity: 1; transform: none; } /* 关键：收尾清掉 transform */
+          100% { opacity: 1; transform: none; }
         }
         @keyframes fsContentOutOnce {
           0%   { opacity: 1; transform: scale(1); }
           80%  { opacity: 1; transform: scale(0.75); }
           99.9%{ opacity: 0; transform: scale(0.75); }
-          100% { opacity: 0; transform: none; } /* 关键：收尾清掉 transform */
+          100% { opacity: 0; transform: none; }
         }
-
-        /* 应用到 content-wrap；不加 forwards，动画完毕立即回到无 transform 的状态 */
         .popup.fullscreen[data-anim="open"]  .content-wrap { animation: fsContentInOnce 350ms ease; }
         .popup.fullscreen[data-anim="close"] .content-wrap { animation: fsContentOutOnce 400ms ease; }
       `;
@@ -938,13 +845,103 @@ class PopupButtonCard extends HTMLElement {
 
       if (window.provideHass) window.provideHass(this);
       this.updateDynamicContent();
-      await this.loadContent();
+      
+    }
+  }
+
+  /* =================== 内容源模式（仅编辑态可见） =================== */
+  _renderAsContentSource() {
+    // 隐藏按钮/弹窗 UI
+    if (this._toggleEl) this._toggleEl.style.display = 'none';
+    if (this._overlayEl) this._overlayEl.style.display = 'none';
+    if (this._popupEl)  this._popupEl.style.display  = 'none';
+
+    // 可视容器（编辑模式下显示）
+    if (!this._contentHost) {
+      this._contentHost = document.createElement('div');
+      this._contentHost.className = 'pbc-content-host';
+      Object.assign(this._contentHost.style, {
+        display: 'none',
+        outline: '1px dashed var(--secondary-text-color, #999)',
+        borderRadius: '8px',
+        padding: '8px',
+        background: 'var(--card-background-color, #fff)',
+      });
+      const badge = document.createElement('div');
+      badge.textContent = `Popup Button 内容源${this._contentId ? ` #${this._contentId}` : ''}`;
+      Object.assign(badge.style, { fontSize: '12px', opacity: '0.7', marginBottom: '6px' });
+      this._contentHost.appendChild(badge);
+      this.shadowRoot.appendChild(this._contentHost);
+    }
+
+    // 渲染子卡片进容器（仅编辑态视觉，真正弹窗不使用该 DOM）
+    this._renderChildCardsInHost();
+
+    // 注册 provider 供按钮 from_id 引用
+    if (this._contentId && !this._contentProvider) {
+      this._contentProvider = this._buildContentProvider();
+      __pbcRegisterContent(this._contentId, this._contentProvider);
+    }
+
+    // 初次更新编辑态可见性
+    this._updateEditVisibility();
+  }
+
+  _updateEditVisibility() {
+    const edit = PopupButtonCard._isEditMode();
+    if (this._cardFunction !== 'content') return;
+    if (this._contentHost) this._contentHost.style.display = edit ? 'block' : 'none';
+  }
+
+  _buildContentProvider() {
+    const getConfig = () => {
+      const c = this._config?.content || {};
+      if (Array.isArray(c.cards)) {
+        return { type: 'vertical-stack', cards: c.cards };
+      }
+      if (c.card) return c.card;
+      return { type: 'markdown', content: '⚠️ 未提供 content.card 或 content.cards' };
+    };
+    const getKey = () => JSON.stringify(getConfig());
+    return { getConfig, getKey };
+  }
+
+  async _renderChildCardsInHost() {
+    if (!this._contentHost) return;
+    // 保留第一个 badge
+    const badge = this._contentHost.firstChild;
+    this._contentHost.innerHTML = '';
+    if (badge) this._contentHost.appendChild(badge);
+    const helpers = await window.loadCardHelpers();
+    const c = this._config?.content || {};
+    let renderCfg;
+    if (Array.isArray(c.cards))    renderCfg = { type: 'vertical-stack', cards: c.cards };
+    else if (c.card)               renderCfg = c.card;
+    else                           renderCfg = { type: 'markdown', content: '在 content 模式下配置 content.card 或 content.cards。' };
+    try {
+      const el = await helpers.createCardElement(renderCfg);
+      el.hass = this._hass;
+      this._contentHost.appendChild(el);
+    } catch (e) {
+      const err = document.createElement('div');
+      err.style.color = 'red';
+      err.textContent = `内容源渲染失败：${e?.message || e}`;
+      this._contentHost.appendChild(err);
     }
   }
 
   /* ================= 动态内容 ================= */
   updateDynamicContent() {
     if (!this._toggleEl || !this._pressable) return;
+
+    // 内容源模式不显示按钮 UI
+    if (this._cardFunction === 'content') {
+      this._toggleEl.style.display = 'none';
+      return;
+    } else {
+      this._toggleEl.style.display = '';
+    }
+
     const styles = this._config.styles || {};
 
     // grid 放在 pressable 内部
@@ -957,7 +954,6 @@ class PopupButtonCard extends HTMLElement {
     const iconVal  = this._config.button_icon ?? '';
 
     const stateFromConfig = this._config.state ?? '';
-
     const stateFromEntity = this._config.entity ? (this._hass?.states?.[this._config.entity]?.state ?? '') : '';
     const stateVal = (stateFromEntity !== '' && stateFromEntity != null) ? String(stateFromEntity) : String(stateFromConfig);
 
@@ -990,33 +986,26 @@ class PopupButtonCard extends HTMLElement {
 
   /* ================= 开合与定位 ================= */
   toggle() {
+    // 内容源模式不响应 toggle
+    if (this._cardFunction === 'content') return;
+
     // 决策逻辑只在“即将打开”时执行
     if (!this._open) {
       // 判断是否需要关闭其他已打开的弹窗
-      // 满足以下任一条件即可：
       const shouldCloseOthers =
-        // 1. 即将打开的是一个全屏弹窗 (最高优先级，无视 multi_expand)
         this._side === 'full_screen' ||
-        // 2. 或者，它不是全屏弹窗，但 multi_expand 设置为 false
         (!this._config.multi_expand && this._side !== 'full_screen');
 
       if (shouldCloseOthers) {
-        // 先发出“让位”信号，让其他弹窗立即降低 z-index，避免视觉冲突
         window.dispatchEvent(new CustomEvent('expandable-yield-others', { detail: this }));
-        // 再发出“关闭”信号
         window.dispatchEvent(new CustomEvent('expandable-close-all', { detail: this }));
-        
-        // 给予一个非常短暂的延迟（50毫秒）
-        // 目的是让其他弹窗有足够的时间开始它们的关闭动画，从而实现平滑的过渡效果
         setTimeout(() => this._actualToggle(), 50);
-        return; // 阻止后续代码立即执行
+        return;
       }
     }
 
-    // 如果是关闭操作，或者是不需要关闭其他弹窗的打开操作，则直接执行
     this._actualToggle();
   }
-
 
   _actualToggle() {
     this._open = !this._open;
@@ -1045,7 +1034,6 @@ class PopupButtonCard extends HTMLElement {
       this._openGuardUntil = performance.now() + 400;
       
       if ((this._config.popup_outside_blur || !this._config.multi_expand) && this._side !== 'full_screen') {
-        // 先让其它实例立刻降到模糊层下，避免旧实例在新实例淡入时“高亮”
         window.dispatchEvent(new CustomEvent('expandable-yield-others', { detail: this }));
         window.dispatchEvent(new CustomEvent('expandable-close-others', { detail: this }));
       }
@@ -1069,11 +1057,9 @@ class PopupButtonCard extends HTMLElement {
         this._overlayEl.setAttribute('data-anim', 'open');
         this._overlayEl.style.pointerEvents = 'auto';
         
-        // 应用用户自定义样式
         if (this._config.styles?.popup_outside_blur) {
           this.applyStyleList(this._overlayEl, this._config.styles.popup_outside_blur);
         } else {
-          // 默认样式
           this._overlayEl.style.background = 'rgba(0, 0, 0, 0.25)';
           this._overlayEl.style.backdropFilter = 'blur(6px)';
           this._overlayEl.style.webkitBackdropFilter = 'blur(6px)';
@@ -1096,11 +1082,9 @@ class PopupButtonCard extends HTMLElement {
         this._justOpened = false; 
       }, 300);
     } else {
-           // 进入关闭阶段：保持高层级但禁用交互（由 CSS 控制 z-index 与 pointer-events）
-     this.setAttribute('data-closing', '');
-     this._teardownAnyTapToClose();
-     // 有外部模糊：延后到动画结束再移除视觉态；无外部模糊：可立即移除
-     if (!this._config?.popup_outside_blur) this._pressable.classList.remove('pressed','effect');
+      this.setAttribute('data-closing', '');
+      this._teardownAnyTapToClose();
+      if (!this._config?.popup_outside_blur) this._pressable.classList.remove('pressed','effect');
       this._closingAnim = true; 
       this._unbindUpdownCloseSources();
       restartAnim('close'); 
@@ -1117,14 +1101,10 @@ class PopupButtonCard extends HTMLElement {
     }
   }
 
-
-
   close() {
     if (!this._open) return; 
     this._open = false; 
-        // 统一关闭标记：保持高层级但禁用交互
     this.setAttribute('data-closing', '');
-    // 有外部模糊：延后到动画结束再移除视觉态；无外部模糊：可立即移除
     if (!this._config?.popup_outside_blur) this._pressable.classList.remove('pressed','effect');
     this._closingAnim = true; 
     this._popupEl.removeAttribute('data-anim'); void this._popupEl.offsetWidth; 
@@ -1135,8 +1115,8 @@ class PopupButtonCard extends HTMLElement {
       this._overlayEl.setAttribute('data-anim','close');
     }
     if (this._side === 'full_screen') this._unlockBodyScroll(); 
-    // data-active 同样在动画结束时移除
   }
+
   positionPopup() {
     const side = this._side || 'bottom'; const popup = this._popupEl;
     if (side === 'full_screen') {
@@ -1145,7 +1125,6 @@ class PopupButtonCard extends HTMLElement {
     }
     popup.classList.remove('fullscreen');
     const offset = 6;
-    // 关键：.toggle 不做 transform，rect 稳定；交互期优先用按下缓存
     const rect = this._anchorRectOnDown || this._toggleEl.getBoundingClientRect();
     switch (side) {
       case 'top':    popup.style.top = `${rect.top - popup.offsetHeight - offset}px`; popup.style.left = `${rect.left}px`; break;
@@ -1169,18 +1148,16 @@ class PopupButtonCard extends HTMLElement {
     }
   };
   _onOverlayTouchStart = (e) => {
-  // 仅在全屏下需要
-  if (this._side !== 'full_screen') return;
-  const t = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]);
-  if (t) this._lastTouchY = t.clientY;
-};
+    if (this._side !== 'full_screen') return;
+    const t = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]);
+    if (t) this._lastTouchY = t.clientY;
+  };
 
   _ensureFullscreenWrap() {
     if (this._contentWrap) { this._updateFsFooterReserve(); return; }
     const wrap = document.createElement('div');
     wrap.className = 'content-wrap';
     
-    // 隐藏滚动条
     wrap.style.scrollbarWidth = 'none';
     wrap.style.msOverflowStyle = 'none';
     
@@ -1215,21 +1192,12 @@ class PopupButtonCard extends HTMLElement {
   
   _updateFsFooterReserve() {
     if (!this._contentWrap) return; 
-    // const btnH = (this._closeBtn?.getBoundingClientRect().height || 48);
     const bottomGapCfgList = this._config?.styles?.content || []; 
-    // const extraGap = Number(this._getStylePropFromList(bottomGapCfgList, 'bottom_gap')) || 16; 
     const reserve = Math.round(bottomGapCfgList);
     this._contentWrap.style.paddingBottom = `${reserve}px`;
   }
   
-  _applyFullscreenSizeDefaults() {
-    if (!this._contentWrap) return; 
-    // const styles = this._config?.styles?.content || []; 
-    // const hasW = this._getStylePropFromList(styles, 'width') != null; 
-    // const hasH = this._getStylePropFromList(styles, 'height') != null; 
-    // if (!hasW) this._contentWrap.style.width = '95vw'; 
-    // if (!hasH) this._contentWrap.style.height = '95vh';
-  }
+  _applyFullscreenSizeDefaults() {}
   
   _destroyFullscreenWrap() {
     if (!this._contentWrap) return; 
@@ -1264,52 +1232,39 @@ class PopupButtonCard extends HTMLElement {
   }
   
   _onOverlayWheelOrTouchMove(e) {
-    // 全屏：只允许 content-wrap 内部滚，并且只在“确实能滚”时放行
     if (this._side === 'full_screen') {
       const wrap = this._contentWrap;
       if (!wrap) { e.preventDefault(); e.stopPropagation(); return; }
 
       const inWrap = wrap.contains(e.target);
-      // 只要目标不在 wrap，直接拦截
       if (!inWrap) { e.preventDefault(); e.stopPropagation(); return; }
 
       const canScroll = wrap.scrollHeight > wrap.clientHeight + 1;
-      // wrap 本身不可滚 —— 直接拦截，防止滚动链
       if (!canScroll) { e.preventDefault(); e.stopPropagation(); return; }
 
-      // 计算滚动意图 deltaY
       let deltaY = 0;
       if (e.type === 'wheel') {
-        // 桌面鼠标滚轮
         deltaY = e.deltaY || 0;
       } else if (e.type === 'touchmove') {
-        // 触屏：用 touchstart 记录的 Y 计算方向
         const t = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]);
         if (t && typeof this._lastTouchY === 'number') {
-          deltaY = this._lastTouchY - t.clientY; // 向下滚为正
+          deltaY = this._lastTouchY - t.clientY;
           this._lastTouchY = t.clientY;
         } else {
-          // 没有基准，保守处理为 0：不放行边界
           deltaY = 0;
         }
       }
 
-      // 边界判断
       const atTop = wrap.scrollTop <= 0;
       const atBottom = wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight - 1;
-
-      // 当已经到顶还继续上滑，或到底还继续下滑 —— 拦截，避免滚动链传到 body
       if ((deltaY < 0 && atTop) || (deltaY > 0 && atBottom)) {
         e.preventDefault();
         e.stopPropagation();
         return;
       }
-
-      // 其余情况：允许 wrap 自己处理滚动
       return;
     }
 
-    // 非全屏：保留你原来的 outside blur 逻辑
     if (this._config?.popup_outside_blur) {
       const inPopup = this._popupEl && (this._popupEl === e.target || this._popupEl.contains(e.target));
       if (!inPopup) {
@@ -1319,7 +1274,6 @@ class PopupButtonCard extends HTMLElement {
     }
   }
 
-  
   _onOverlayClickToClose(e) { 
     if (!this._overlayArmed || this._justOpened) return; 
     const wrap = this._contentWrap; 
@@ -1344,7 +1298,6 @@ class PopupButtonCard extends HTMLElement {
   }
 
   _onWindowPointerDownCapture(e) {
-    // 非全屏时：点击 content 外部关闭
     if (!this._open || this._side === 'full_screen') return;
     if (!this._overlayArmed || this._justOpened) return;
     const path = e.composedPath ? e.composedPath() : null;
@@ -1356,7 +1309,6 @@ class PopupButtonCard extends HTMLElement {
   _onWindowScroll() {
     if (!this._open) return;
     if (this._side === 'full_screen') return;
-    // 若按住期间滚动，丢弃按下时缓存，让弹窗跟随按钮实时位置
     if (this._anchorRectOnDown) this._anchorRectOnDown = null;
     if (this._config.updown_slide_to_close_popup) {
       this.close();
@@ -1376,7 +1328,6 @@ class PopupButtonCard extends HTMLElement {
       this._unlockBodyScroll(); 
       this._destroyFullscreenWrap();
 
-      // 页面隐藏时也移除激活标记
       this._closingAnim = false;
       this._overlayArmed = false;
       this._justOpened = false;
@@ -1387,7 +1338,6 @@ class PopupButtonCard extends HTMLElement {
       this.removeAttribute('data-closing');
       this.removeAttribute('data-opening');
       this.removeAttribute('data-yield');
-      // 同时收起遮罩
       if (this._overlayEl) {
         this._overlayEl.style.pointerEvents = 'none';
         this._overlayEl.style.display = 'none';
@@ -1397,7 +1347,6 @@ class PopupButtonCard extends HTMLElement {
   }
   
   _onAnimationEnd(e) {
-    // 开启动画结束：移除临时置顶态（只在 popup 的 open 动画结束时触发）
     if (this._open && this.hasAttribute('data-opening') &&
         e?.target === this._popupEl && this._popupEl.getAttribute('data-anim') === 'open') {
       this.removeAttribute('data-opening');
@@ -1417,12 +1366,9 @@ class PopupButtonCard extends HTMLElement {
       }
       this._pressable.classList.remove('pressed','effect');
       this.removeAttribute('data-blur-closing');
-      // 关闭动画完毕后，移除本实例置顶标记
       this.removeAttribute('data-active');
       this.removeAttribute('data-fullscreen');
       this.removeAttribute('data-closing');
-      // 兜底：若还残留 data-opening（极端竞态），此处一并移除
-      //this.removeAttribute('data-opening');
       this.removeAttribute('data-yield');
     
       if (this._config?.popup_outside_blur) this._unlockBodyScroll();
@@ -1509,51 +1455,294 @@ class PopupButtonCard extends HTMLElement {
     }
   }
 
-  /* ================= 内容加载 ================= */
+  /* ================= 内容加载（支持 content.from_id + YAML 预览兜底） ================= */
   async loadContent() {
-    if (!this._popupEl) return; 
-    this._popupEl.innerHTML = ''; 
-    this._contentWrap = null; 
+    // 内容源模式（card_function: content）不在弹窗里加载 DOM
+    if (this._cardFunction === 'content') return;
+
+    if (!this._popupEl) return;
+    // 清空旧内容
+    this._popupEl.innerHTML = '';
+    this._contentWrap = null;
     this._closeBtn = null;
-    
-    const content = this._config.content; 
-    if (!content) return; 
-    const helpers = await window.loadCardHelpers();
-    
-    try {
-      const cardConfig = content.card || content; 
-      const cardEl = await helpers.createCardElement(cardConfig); 
-      cardEl.hass = this._hass; 
-      try { cardEl.variables = this._variables; } catch (_e) {}
-      if (this._config.entity && cardEl.config && !cardEl.config.entity) { 
-        cardEl.config.entity = this._config.entity; 
+
+    const content = this._config.content;
+    if (!content) return;
+
+    // 解析 from_id（优先）
+    let effectiveCardConfig = null;
+    let fromIdNotFound = false;
+    if (this._cardFunction === 'button' && content.from_id) {
+      // 1) 先查运行时注册表（正常视图）
+      const provider = __pbcLookupContent(content.from_id);
+      if (provider) {
+        effectiveCardConfig = provider.getConfig();
+      } else {
+        // 2) YAML 原始编辑器等场景：回退到“直接扫描 Lovelace 配置”
+        const cfg = PopupButtonCard._getLovelaceConfig?.();
+        const extracted = __pbcFindContentInConfig(cfg, content.from_id);
+        if (extracted) {
+          effectiveCardConfig = extracted;
+        } else {
+          fromIdNotFound = true; // 真的找不到，再走占位提示
+        }
       }
-      this._contentCard = cardEl; 
-      
-      if (this._side === 'full_screen') { 
-        this._ensureFullscreenWrap(); 
-        this._contentWrap.appendChild(cardEl); 
-        this._applyFullscreenSizeDefaults(); 
-      } else { 
-        this._popupEl.appendChild(cardEl); 
-        
-        // 非全屏模式下隐藏滚动条
+    }
+
+    // 选择最终 card 配置；若缺失则用占位 markdown 防止 “No card type configured”
+    let cardConfig = effectiveCardConfig || content.card || content;
+
+    // 如果还是拿不到合法的 type，构造一个占位卡
+    if (!cardConfig || typeof cardConfig !== 'object' || !cardConfig.type) {
+      if (fromIdNotFound) {
+        // YAML 原始编辑器里只渲染当前卡，内容源未挂载很常见——给出友好提示
+        cardConfig = {
+          type: 'markdown',
+          content: `⚠️ content.from_id "**${content.from_id}**" 未在当前仪表盘中找到该内容源。\n\n请确保已配置contend_id或content_id正确。`
+        };
+      } else {
+        cardConfig = {
+          type: 'markdown',
+          content: '⚠️ 未提供 content.card，且没有有效的 content.from_id。'
+        };
+      }
+    }
+
+    const helpers = await window.loadCardHelpers();
+
+    try {
+      const cardEl = await helpers.createCardElement(cardConfig);
+      cardEl.hass = this._hass;
+      try { cardEl.variables = this._variables; } catch (_e) {}
+
+      if (this._config.entity && cardEl.config && !cardEl.config.entity) {
+        cardEl.config.entity = this._config.entity;
+      }
+      this._contentCard = cardEl;
+
+      if (this._side === 'full_screen') {
+        this._ensureFullscreenWrap();
+        this._contentWrap.appendChild(cardEl);
+        this._applyFullscreenSizeDefaults();
+      } else {
+        this._popupEl.appendChild(cardEl);
+        // 隐藏滚动条
         this._popupEl.style.scrollbarWidth = 'none';
         this._popupEl.style.msOverflowStyle = 'none';
       }
-    } catch (e) { 
-      this._popupEl.innerHTML = `<div style="color:red">卡片加载失败: ${e?.message || e}</div>`; 
+    } catch (e) {
+      this._popupEl.innerHTML = `<div style="color:red">卡片加载失败: ${e?.message || e}</div>`;
     }
-    
-    if (this._config.styles?.content) { 
-      if (this._side === 'full_screen') this.applyStyleList(this._contentWrap, this._config.styles.content); 
-      else this.applyStyleList(this._popupEl, this._config.styles.content); 
+
+    // 应用样式 & 溢出滚动
+    if (this._config.styles?.content) {
+      if (this._side === 'full_screen') this.applyStyleList(this._contentWrap, this._config.styles.content);
+      else this.applyStyleList(this._popupEl, this._config.styles.content);
     }
-    
-    // 应用内容样式后更新溢出滚动设置
     this._updateContentOverflowScroll();
   }
-  
+
+
+  /* ================== any tap to close（原逻辑保留） ================== */
+  _armAnyTapToClose() {
+    if (!this._popupEl) return;
+    if (!this._config?.any_ha_action_to_close_popup) return;
+
+    const isFullscreen = this._side === 'full_screen';
+
+    const delay = Number(this._config?.any_tap_close_delay_ms ?? 500);
+    const PRIME_WINDOW_MS = Number(this._config?.any_tap_prime_window_ms ?? 1500);
+    const closeOnMoreInfo = this._config?.close_on_more_info ?? true;
+    const moreInfoDelayMs = Number(this._config?.close_more_info_delay_ms ?? 500);
+
+    const root = isFullscreen ? this._contentWrap : this._popupEl;
+    if (!root) return;
+
+    // ——— 调度器 ———
+    const schedule = () => {
+      if (this._shouldGuardInitialTap?.() || this._justOpened) return; // 刚打开保护期
+      if (!this._open) return;
+      if (this._anyTapCloseTimer) clearTimeout(this._anyTapCloseTimer);
+      this._anyTapCloseTimer = setTimeout(() => { if (this._open) this.close(); }, delay);
+    };
+
+    // 绕过保护期用于“立即/短延迟”关闭（给 hass-more-info 用）
+    const closeSoon = (ms = 0) => {
+      if (!this._open) return;
+      if (this._anyTapCloseTimer) clearTimeout(this._anyTapCloseTimer);
+      this._anyTapCloseTimer = setTimeout(() => { if (this._open) this.close(); }, ms);
+    };
+
+    // ——— 交互引子：记录最近一次弹窗内用户动作时间戳 ———
+    this._lastPopupUserActionTs = this._lastPopupUserActionTs ?? 0;
+    const markAction = () => { this._lastPopupUserActionTs = Date.now(); };
+    const recentlyInPopup = () => (Date.now() - (this._lastPopupUserActionTs || 0)) <= PRIME_WINDOW_MS;
+
+    const onClick     = (e) => { if (root.contains(e.target)) markAction(); };
+    const onPointerUp = (e) => { if (root.contains(e.target)) markAction(); };
+    const onKeyDown   = (e) => { if (root.contains(e.target)) markAction(); };
+    const onChange    = (e) => { if (root.contains(e.target)) markAction(); };
+    const onInput     = (e) => { if (root.contains(e.target)) markAction(); };
+    const onTouchEnd  = (e) => { if (root.contains(e.target)) markAction(); };
+
+    root.addEventListener('click', onClick, { capture: true });
+    root.addEventListener('pointerup', onPointerUp, { capture: true });
+    root.addEventListener('keydown', onKeyDown, { capture: true });
+    root.addEventListener('change', onChange, { capture: true });
+    root.addEventListener('input', onInput, { capture: true });
+    root.addEventListener('touchend', onTouchEnd, { capture: true });
+
+    const _normalizeList = (v) => {
+      if (v == null) return [];
+      if (typeof v === 'string') return v.trim().toLowerCase() === 'all' ? 'all' : [v];
+      if (Array.isArray(v)) return v.map(x => String(x ?? '').toLowerCase());
+      return [];
+    };
+
+    const _shouldCloseByFilter = (kind, text) => {
+      const filterCfg = this._config?.filter_for_ha_action_to_close_popup;
+      if (!filterCfg) return true;
+
+      const include = _normalizeList(filterCfg.include_keyword);
+      const exclude = _normalizeList(filterCfg.exclude_keyword);
+
+      const hay = String([kind, text].filter(Boolean).join(' ')).toLowerCase();
+
+      if (exclude === 'all') return false;
+      if (include === 'all') return true;
+
+      if (Array.isArray(exclude) && exclude.length && exclude.some(k => k && hay.includes(k))) return false;
+
+      if (Array.isArray(include) && include.length) {
+        return include.some(k => k && hay.includes(k));
+      }
+      return true;
+    };
+
+    const onMoreInfo = (ev) => {
+      if (!closeOnMoreInfo) return;
+      if (!this._open) return;
+
+      const det = ev?.detail || {};
+      const entityIdForFilter = det?.entityId || det?.entity || det?.entity_id || '';
+      const textForFilterMoreInfo = `more-info ${entityIdForFilter}`;
+      if (!_shouldCloseByFilter('more-info', textForFilterMoreInfo)) return;
+
+      if (isFullscreen) {
+        if (!recentlyInPopup()) return;
+
+        const det    = ev?.detail || {};
+        const target = ev.target || window;
+        const openDelay = Number(this._config?.close_more_info_delay_ms ?? 250);
+
+        ev.stopImmediatePropagation();
+        ev.preventDefault?.();
+
+        closeSoon(0);
+
+        setTimeout(() => {
+          const re = new CustomEvent('hass-more-info', {
+            detail: { ...det, __pbc_gated: true },
+            bubbles: true, composed: true
+          });
+          try { target.dispatchEvent(re); } catch { window.dispatchEvent(re); }
+        }, openDelay);
+
+        return;
+      }
+
+      if (det.__pbc_gated) return;
+
+      const shouldGate =
+        recentlyInPopup() || !this._config?.multi_expand || !!this._config?.popup_outside_blur;
+      if (!shouldGate) return;
+
+      ev.stopImmediatePropagation();
+      ev.preventDefault?.();
+
+      window.dispatchEvent(new CustomEvent('expandable-yield-others', { detail: { source: 'more-info-gate' } }));
+      window.dispatchEvent(new CustomEvent('expandable-close-all',   { detail: { source: 'more-info-gate' } }));
+
+      const openDelay = moreInfoDelayMs;
+      const target = ev.target || window;
+      setTimeout(() => {
+        const re = new CustomEvent('hass-more-info', {
+          detail: { ...det, __pbc_gated: true },
+          bubbles: true, composed: true
+        });
+        try { target.dispatchEvent(re); } catch { window.dispatchEvent(re); }
+      }, openDelay);
+    };
+
+    window.addEventListener('hass-more-info', onMoreInfo, { capture: true });
+
+    const currentUserId = this._hass?.user?.id;
+    const serviceEventHandler = (ev) => {
+      const ctx = ev?.context || ev?.data?.context || {};
+      const userOk = !!ctx.user_id && ctx.user_id === currentUserId;
+      if (!userOk) return;
+      if (!recentlyInPopup()) return;
+
+      const d = ev?.data || {};
+      const domain = d.domain || '';
+      const service = d.service || '';
+      const ents = []
+        .concat(d?.service_data?.entity_id || [])
+        .concat(d?.service_data?.entityIds || [])
+        .filter(Boolean)
+        .join(' ');
+      const textForFilterSvc = `${domain}.${service} ${ents}`.trim();
+      if (!_shouldCloseByFilter('call_service', textForFilterSvc)) return;
+
+      schedule();
+    };
+
+    this._unsubCallService = null;
+    try {
+      const conn = this._hass?.connection;
+      if (conn?.subscribeEvents) {
+        conn.subscribeEvents(serviceEventHandler, 'call_service')
+            .then(unsub => { this._unsubCallService = unsub; })
+            .catch(() => { /* 忽略订阅失败 */ });
+      }
+    } catch { /* 忽略 */ }
+
+    const onNavigate = (ev) => {
+      if (!this._open) return;
+      if (!recentlyInPopup()) return;
+      const path = ev?.detail?.path || ev?.detail?.url || ev?.detail || '';
+      const textForFilterNav = `navigation ${path}`;
+      if (!_shouldCloseByFilter('navigation', textForFilterNav)) return;
+      schedule();
+    };
+    window.addEventListener('hass-navigate', onNavigate, { capture: true });
+
+    const prevCleanup = this._anyTapCloseCleanup;
+    this._anyTapCloseCleanup = () => {
+      try {
+        root.removeEventListener('click', onClick, { capture: true });
+        root.removeEventListener('pointerup', onPointerUp, { capture: true });
+        root.removeEventListener('keydown', onKeyDown, { capture: true });
+        root.removeEventListener('change', onChange, { capture: true });
+        root.removeEventListener('input', onInput, { capture: true });
+        root.removeEventListener('touchend', onTouchEnd, { capture: true });
+        window.removeEventListener('hass-more-info', onMoreInfo, { capture: true });
+        window.removeEventListener('hass-navigate', onNavigate, { capture: true });
+      } catch {}
+      if (this._unsubCallService) {
+        try { this._unsubCallService(); } catch {}
+        this._unsubCallService = null;
+      }
+      if (this._anyTapCloseTimer) { clearTimeout(this._anyTapCloseTimer); this._anyTapCloseTimer = null; }
+      if (prevCleanup) prevCleanup();
+    };
+  }
+
+  _teardownAnyTapToClose() {
+    if (this._anyTapCloseTimer) { clearTimeout(this._anyTapCloseTimer); this._anyTapCloseTimer = null; }
+    if (this._anyTapCloseCleanup) this._anyTapCloseCleanup();
+  }
+
   getCardSize() { return 1; }
 }
 
@@ -1565,7 +1754,7 @@ window.customCards = window.customCards || [];
 if (!window.customCards.some((c) => c.type === 'popup-button-card')) {
   window.customCards.push({ 
     type: 'popup-button-card', 
-    name: 'Popup Button Card v2.2.4', 
+    name: 'Popup Button Card v2.2.5', 
     description: '一个带弹窗的按钮卡片' 
   });
 }
